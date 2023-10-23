@@ -2,7 +2,7 @@
         implicit real*8 (a-h,o-z)
         character*100 line
         logical exist
-        parameter(mxidt=5000)
+        parameter(mxidt=1000)
         dimension nidt(2),nfrm(2)
         dimension g(3,3,121),fodidt(3,mxidt,2),fordrv(3,mxidt,2)
         dimension r(3),f(3),h(3)

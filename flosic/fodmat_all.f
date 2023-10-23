@@ -384,6 +384,7 @@ C
        CALL LOWSIC(ISPN,NDH,NFOD(ISPN),OVER,HAM,FMAT,EVAL,SC1)
 C FLO_NU = SUM(MU) HAM(MU,NU)*FO_MU
 C FLO_NU = SUM(MU)SUM(IW) HAM(MU,NU)*TMAT(MU,IW,ISPN)*|KS_IW>
+             PRINT *, 'IN FODMAT, ISPN, NWFS(ISPN)', ISPN,NWFS(ISPN)
              OVER=0.0D0
              DO NU=1,NFOD(ISPN)
              DO IW=1,NWFS(ISPN)
@@ -434,7 +435,7 @@ C at the end
          ORB_CHG=0.0D0
          ORB_COU=0.0D0
          ORB_EXC=0.0D0
-         print*,'NT',NT(IFLO,LSPX)
+c        print*,'NT',NT(IFLO,LSPX)
          DO JFLO=1,NT(IFLO,LSPX)
               NFLO=-IFND(JFLO,IFLO,LSPX)
                 COULOMB=0.0D0
@@ -468,22 +469,50 @@ C      END DO
           COUSIC=0.0D0
              DO INDX=1,NDH_TOT
              HSTOR(INDX,2)=0.0D0
+C
+C kaj 6-24
+c  initialize HSTOR(INDX,1) to compute fod forces
+C
+             HSTOR(INDX,1)=0.0d0
              END DO
        FOUND=0.0D0
        DO KFLO=1,MFOD(KSPX)  !!!MFOD(KSPX)  !!fix this later
           IFLO=KFLO
           NFLO=-IFLO
-       PRINT*,'IFLO:',IFLO, "MADE IT HERE"
+          PRINT*,'IFLO:',IFLO, "MADE IT HERE"
                        COULOMB=0.0D0
                         RHOG   =0.0D0
                         IF(IFLO.EQ.1.AND.KSPX.EQ.1) SICENERGY=0.0D0
                         MEQV=NT(IFLO,KSPX)
                         call coupot1
                         SICENERGY=SICENERGY+TOT_SIC*MEQV
-C!!        CALL SICHAM(IFLO,NT(KFLO,KSPX),IFND(1,KFLO,KSPX))
-       END DO
-       WRITE(50)(HSTOR(INDX,2),INDX=1,NDH_TOT)
-       END DO
+       END DO !kflo
+C
+c  kaj 7-12-23
+c
+c uncomment to get fod forces  ***************************************************
+                IF(CONVERGENCE) THEN
+                 CALL GET_EPS(kspx)  ! ,MFOD(kspnx))
+                END IF
+c end change ***************************************************
+                 DO INDX=1,NDH_TOT 
+                   HSTOR(INDX,2)=(HSTOR(INDX,2)+HSTOR(INDX,1))*0.5D0
+                 END DO
+                WRITE(50)(HSTOR(INDX,2),INDX=1,NDH_TOT)
+                call overlap(1)
+c
+c  kaj 7-12-23   get fod forces
+c
+c  uncomment  to get forces **********************************
+       if(convergence) then
+       call frmorb2(kspx)
+       end if  
+       END DO   !kspx
+       print *,'finished getting forces'
+c      call stopit
+                call overlap(1)
+c end change ***************************************************
+c KAJ  remove when working 
 C Adjusting parameters for the ellipsoid 
        OPEN(51,FILE='ABCD')
        DO KSPN=1,2
@@ -711,7 +740,7 @@ C ORIGINALLY WRITTEN BY MARK R PEDERSON (1985)
        INCLUDE 'PARAMS'
        INCLUDE 'commons.inc'
        COMMON/FORRx/NFLO,KSPX!!,TMAT(NDH,NDH,2)
-       COMMON/FLOINFO/ FOD(3,MAX_OCC,2),NFOD(2),MFOD(2)
+       COMMON/FLOINFO/ FOD(3,MAX_OCC,MXSPN),NFOD(MXSPN),MFOD(MXSPN)
        DIMENSION NDEG(3),IND_SALC(ISMAX,MAX_CON,3)
        DIMENSION RVECI(3,MX_GRP),RVEC(3)
        DIMENSION ISHELLV(2)
@@ -720,6 +749,12 @@ C ORIGINALLY WRITTEN BY MARK R PEDERSON (1985)
        DATA ICALL1,ICALL2,ISHELL/0,0,0/
        logical exist
 C
+c      print *, 'RxRAVEL TMAT'
+c      do i = 1,5
+c        print 101, (TMAT(j,i,1),j=1,5)
+c      end do
+c       PSI = 0.0d0
+ 101    format(5(f10.4))
        IF(I_SITE.EQ.1)THEN
         ICALL1=ICALL1+1
         CALL GTTIME(TIMER1)
@@ -794,6 +829,7 @@ C
  1000    CONTINUE
  1010   CONTINUE
 C END OF WAVEFUNCTION LOOP
+c           print *, 'IN RXRAVEL, NWFS', NWFS
        IF(NFLO.NE.0)THEN
          IDID=0
                IOFS=(ISPN-1)*NWFS(1)

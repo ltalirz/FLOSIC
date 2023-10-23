@@ -40,8 +40,8 @@ BASICS = all-defs.o atomscf.o atomsph.o bhs-defs.o decomp.o dosjnt.o \
          dvpmesh.o force.o ggapot.o hamilt.o hampar.o isetup.o main.o \
          mesh.o miscell.o poisson.o psp-defs.o psp-nlcc.o pspstuff.o  \
          wfgrid.o mpistuff.o extpot.o magnet.o efg.o formfak.o hyperf.o \
-         nlbfgs.o ezstart.o wnf.o excite-jd.o fodmat_all.o sicmat.o  new_wave.o frmrot.o \
-			         flomoment.o mapper.o sicham_alan.o  recursion.o 
+         nlbfgs.o ezstart.o wnf.o excite-jd.o ./fod_force/fodmat_all.o sicmat.o  new_wave.o frmrot.o \
+			         flomoment.o mapper.o sicham_alan.o  recursion.o part_hole.o ./fod_force/get_eps_1.o ./fod_force/fodforce.o
 ####     nlbfgs.o ezstart.o atomsic.o
 
 EXTENS = copyright.o craylib.o diagon.o myclock.o pbegga.o \
