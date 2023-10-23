@@ -4604,9 +4604,18 @@ C CHECK FOR ZEROS
                IF(NS_TOT(KREP).NE.0)THEN
                 PRINT*,'KREP,ADD1,ADD2:',KREP,KROW,ADD1,ADD2,IND
                END IF
-               END DO
+             END DO
              
-               END DO
+             END DO
+C
+C kaj 7-13-2023  MYWAY = 1 -- use hstor(indx,1) and hstor(indx,2) to
+C keep upper diagonal and lower diagonal parts of matrix
+C
+C                MYWAY = 0  -- original approach
+c
+c
+c      MWAY=0
+       MWAY=1
        IST=0
        INDX=0
 C       IF(ABS(MEQV).NE.1.AND.ABS(MEQV).NE.4) STOP  'MEQV ....'
@@ -4631,13 +4640,26 @@ C FIND SUM_FLO <IBAS|FLO><FLO|JBAS> (SUMMED OVER ALL FLOS)
        END DO
 CC        print*,'MEQV',MEQV
           FF=DBLE(MEQV)/NDMREP(KREP)  !MEQV*NGRP  !!!1.0D0!!/NDMREP(KREP)/4.0D0
-          DO IBAS=1    ,NS_TOT(KREP)
-          DO JBAS=IBAS,NS_TOT(KREP)
-          INDX=INDX+1
-          HSTOR(INDX,2)=HSTOR(INDX,2)+
+C
+C kaj 7-13-2023
+C
+          IF(MWAY.EQ.0)THEN
+            DO IBAS=1    ,NS_TOT(KREP)
+            DO JBAS=IBAS,NS_TOT(KREP)
+            INDX=INDX+1
+            HSTOR(INDX,2)=HSTOR(INDX,2)+
      &        FF*(HAM(JBAS,IBAS)+HAM(IBAS,JBAS))/2.0D0
-          END DO
-          END DO
+            END DO
+            END DO
+          ELSE
+            DO IBAS=1    ,NS_TOT(KREP)
+            DO JBAS=IBAS,NS_TOT(KREP)
+              INDX=INDX+1
+              HSTOR(INDX,1)=HSTOR(INDX,1)+HAM(JBAS,IBAS)*FF
+              HSTOR(INDX,2)=HSTOR(INDX,2)+HAM(IBAS,JBAS)*FF
+            END DO
+            END DO
+          END IF
        END DO
        END IF 
            PRINT*,'NREC:',INDX,IST
