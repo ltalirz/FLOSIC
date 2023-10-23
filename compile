@@ -1,9 +1,0 @@
-rm *.o
-rm condcomp
-rm condcomp_new
-make -f Makefile.ser
-rm *.o
-make -f Makefile.mpi 
-rm *.o 
-rm condcomp
-rm condcomp_new
