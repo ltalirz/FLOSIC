@@ -1,0 +1,1496 @@
+       SUBROUTINE DVPMESH(ITBEG,ICALC)
+        INCLUDE 'PARAMS'
+        INCLUDE 'commons.inc'
+C
+C MXRAD:  MAX. NUMBER OF POINTS FOR A RADIAL MESH
+C MXANG:  MAX. NUMBER OF ANGULAR POINTS FOR AN ATOMIC SPHERE
+C
+        PARAMETER (MAXRAD=300)
+        PARAMETER (MAXANG=1250)
+        PARAMETER (LSIZ=(LDIM*(LDIM+1))/2)
+        LOGICAL EXIST,LSYWT,ISUCC
+C
+C LOCAL STUFF 
+C
+        LOGICAL ICOUNT,IUPDAT
+        COMMON/TMP1/STOMSH(6,MAXANG,2),PTS(NSPEED,3),RVEC(3)
+     &   ,GRAD(NSPEED,10,LSIZ,MAX_CON,LDIM)
+     &   ,OVLTAB(MAX_CON,LDIM,MAX_FUSET)
+     &   ,OVLDIA(2,LSIZ,MAX_CON,LDIM,MAX_FUSET)
+     &   ,ONSOVL(2,LSIZ,LSIZ,MAX_CON,LDIM,MAX_CON,LDIM)
+     &   ,OVLSUM(2,LSIZ,MAX_CON,LDIM,MX_CNT)
+     &   ,RRAD(MAXRAD),RANG(3,MAXANG),WRAD(MAXRAD),WANG(MAXANG)
+     &   ,RNUC(3,MX_CNT),REQV(3,MX_GRP),RSQR(MX_CNT)
+     &   ,RCDTAB(MX_CNT,MX_CNT)
+     &   ,NMULT(MAX_IDENT),IDINDX(MX_CNT),IFINDX(MX_CNT)
+     &   ,ICOUNT(MAX_CON,LDIM)
+C
+        DATA LSYWT /.FALSE./
+        DATA MODPART,NDECAY /1, 2/
+        DATA ERRCOR /1.0D-6/
+        DATA LMXRAD,ERRAD,LMXANG,ERRANG /17, 1.0D-6, 29, 1.0D-6/
+        DATA RNNFAC,ANNFAC /2.0D0, 2.0D0/
+        DATA AU2ANG /0.529177D0/
+C
+C TOLER IS A GENERAL ACCURACY MARGIN.
+C
+        DATA TOLER /1.0D-8/
+C
+C CHECK IF OLDMESH EXISTS AND READ OLD MESH IF DESIRED
+C
+        PRINT '(A)',' '
+        PRINT '(A)','CREATING INTEGRATION MESH'
+        CALL GTTIME(TIME1)
+        TIME2=TIME1
+        TIME3=TIME1
+        IF (ITBEG.NE.0) THEN
+         IF (ITBEG.LT.0) ITBEG=0
+         INQUIRE(FILE='OLDMESH',EXIST=EXIST)
+         IF (EXIST) THEN
+          PRINT '(A)','TRYING TO READ OLD MESH'
+          OPEN(99,FILE='OLDMESH',FORM='UNFORMATTED',STATUS='UNKNOWN')
+          REWIND(99)
+          READ(99) NMSH,JCALC
+          PRINT '(A,I10)','TOTAL NUMBER OF MESH POINTS: ',NMSH
+          IF (NMSH.GT.MAX_PTS) THEN
+           PRINT *,'DVPMESH: MAX_PTS MUST BE AT LEAST: ',NMSH
+           CALL STOPIT
+          END IF
+          READ(99)((RMSH(J,I),J=1,3),I=1,NMSH)
+          READ(99)(WMSH(I),I=1,NMSH)
+          CLOSE(99)
+          IF (JCALC.EQ.ICALC) THEN
+           CALL GTTIME(TIME2)
+           CALL REORMSH
+           CALL GTTIME(TIME3)
+           GOTO 900
+          END IF
+          PRINT *,'DVPMESH: OLDMESH IS INCOMPATIBLE WITH CURRENT'
+          PRINT *,'         GEOMETRY --> A NEW MESH WILL BE CREATED'
+          PRINT *,'         OLDMESH WILL BE SAVED IN FILE SAVMESH'
+          OPEN(99,FILE='SAVMESH',FORM='UNFORMATTED',STATUS='UNKNOWN')
+          WRITE(99) NMSH,JCALC
+          WRITE(99)((RMSH(J,I),J=1,3),I=1,NMSH)
+          WRITE(99)(WMSH(I),I=1,NMSH)
+          CLOSE(99)
+         END IF
+        END IF
+C
+C GET DEGREE OF HIGHEST LEBEDEV MESH
+C
+        LMAXSTO= -1
+        CALL LEBEDEV(MAXANG,LMAXSTO,NANG,RANG,WANG)
+C
+C READ DVPMESH
+C
+        OPEN(99,FILE='DVPMESH',FORM='FORMATTED',STATUS='UNKNOWN')
+        REWIND(99)
+        READ(99,*,END=10) LSYWT
+        READ(99,*,END=10) MODPART,NDECAY
+        READ(99,*,END=10) ERRCOR
+        READ(99,*,END=10) LMXRAD,ERRAD,RNNFAC
+        READ(99,*,END=10) LMXANG,ERRANG,ANNFAC
+        IF (NDECAY.LT.1) THEN
+         PRINT *,'DVPMESH: NDECAY MUST BE >= 1'
+         CALL STOPIT
+        END IF
+        IF (ERRCOR .LE. 0.0D0) THEN
+         PRINT *,'DVPMESH: ERRCOR MUST BE > 0'
+         CALL STOPIT
+        END IF
+        IF ((LMXRAD .LE. 0) .OR. (LMXANG .LE. 0)) THEN
+         PRINT *,'DVPMESH: LMXRAD AND LMXANG MUST BE >= 0'
+         CALL STOPIT
+        END IF
+        IF ((LMXRAD .GT. LMAXSTO) .OR. (LMXANG .GT. LMAXSTO)) THEN
+         PRINT *,'DVPMESH: LMXRAD AND LMXANG MUST BE <= ',LMAXSTO
+         CALL STOPIT
+        END IF
+        IF ((ERRAD .LE. 0.0D0) .OR. (ERRANG .LE. 0.0D0)) THEN
+         PRINT *,'DVPMESH: ERRAD AND ERRANG MUST BE > 0'
+         CALL STOPIT
+        END IF
+        IF ((RNNFAC .LT. 0.0D0) .OR. (ANNFAC .LT. 0.0D0)) THEN
+         PRINT *,'DVPMESH: RNNFAC AND ANNFAC MUST BE >= 0'
+         CALL STOPIT
+        END IF
+C
+C WRITE DVPMESH
+C
+   10   REWIND(99)
+        WRITE(99,'(1X,L5)') LSYWT
+        WRITE(99,'(1X,I5,1X,I5)') MODPART,NDECAY
+        WRITE(99,'(1X,E12.5)') ERRCOR 
+        WRITE(99,'(1X,I5,1X,E12.5,1X,F10.5)') LMXRAD,ERRAD,RNNFAC
+        WRITE(99,'(1X,I5,1X,E12.5,1X,F10.5)') LMXANG,ERRANG,ANNFAC
+        WRITE(99,*)'------------------------------------------------'
+        WRITE(99,*)'* LSYWT'
+        WRITE(99,*)'* MODPART (1 -> RHO*POT/R**2, 2 -> BECKE), NDECAY'
+        WRITE(99,*)'* ERRCOR'
+        WRITE(99,*)'* LMXRAD, ERRAD,  RNNFAC'
+        WRITE(99,*)'* LMXANG, ERRANG, ANNFAC'
+        CLOSE(99)
+C
+C FOR EACH IDENTITY MEMBER, DETERMINE:
+C * MULTIPLICITY
+C * COORDINATE
+C * INDEX OF IDENTITY MEMBER
+C
+        NNUC=0
+        DO IID=1,NIDENT
+         CALL GASITES(1,RIDT(1,IID),NMULT(IID),REQV,MSITES)
+         NTOT=NNUC+NMULT(IID)
+         IF (NTOT .GT. MX_CNT) THEN
+          PRINT *,'DVPMESH: MX_CNT MUST BE AT LEAST: ',NTOT
+          CALL STOPIT
+         END IF
+         DO INUC=1,NMULT(IID)
+          RNUC(1,NNUC+INUC)=REQV(1,INUC)
+          RNUC(2,NNUC+INUC)=REQV(2,INUC)
+          RNUC(3,NNUC+INUC)=REQV(3,INUC)
+          IDINDX(NNUC+INUC)=IID
+         END DO
+         NNUC=NNUC+NMULT(IID)
+        END DO
+C
+C WRITE XYZ STRUCTURE FILE WHICH IS XMOL READABLE
+C
+        OPEN(99,FILE='XMOL.DAT',FORM='FORMATTED',STATUS='UNKNOWN')
+        REWIND(99)
+        WRITE(99,'(I5)') NNUC
+        WRITE(99,'(A)') 'Cluster output'
+        DO INUC=1,NNUC 
+         WRITE(99,'(1X,I4,3(1X,F10.5))') 
+     &    NINT(ZNUC(IFUIDT(IDINDX(INUC)))),(AU2ANG*RNUC(I,INUC), I=1,3)
+        END DO
+        CLOSE(99)
+C
+C SETUP RCDTAB
+C
+        DO INUC=1,NNUC
+         RCDTAB(INUC,INUC)= 0.0D0
+         DO JNUC=INUC+1,NNUC
+          RDIF= (RNUC(1,INUC)-RNUC(1,JNUC))**2
+     &         +(RNUC(2,INUC)-RNUC(2,JNUC))**2
+     &         +(RNUC(3,INUC)-RNUC(3,JNUC))**2
+          IF (RDIF .LT. TOLER) THEN
+           PRINT *,'DVPMESH: FOUND TWO ATOMS AT IDENTICAL POSITIONS'
+           CALL STOPIT
+          END IF
+          RDIF= 1.0D0/SQRT(RDIF)
+          RCDTAB(JNUC,INUC)= RDIF
+          RCDTAB(INUC,JNUC)= RDIF
+         END DO
+        END DO
+C
+C SETUP IFINDX
+C
+        DO INUC=1,NNUC
+         IFINDX(INUC)=IFUIDT(IDINDX(INUC))
+        END DO
+C
+C DETERMINE ONSITE OVERLAP INTEGRALS FOR RADIALLY SYMMETRIC
+C FUNCTIONS R**L * EXP(-ALP*R**2) STORED IN OVLTAB
+C SETUP INVERSE ONSITE OVERLAP TABLE FOR ACTUAL BASIS FUNCTIONS IN OVLDIA
+C
+        THRD=1.0D0/3.0D0
+        DO IFNCT=1,NFNCT
+         CALL OVLONS(IFNCT,OVLTAB(1,1,IFNCT))
+         DO L=0,LSYMMAX(IFNCT)
+          L1=L+1
+          LS=(L1*(L1+1))/2
+          FAC=1.0D0/(2*L+1)
+          DO ICON=1,N_CON(L1,IFNCT)
+           DO IS=1,LS
+            OVLDIA(1,IS,ICON,L1,IFNCT)=FAC*OVLTAB(ICON,L1,IFNCT)
+           END DO
+           IF (L .EQ. 2) THEN
+            DO IS=4,6
+             OVLDIA(1,IS,ICON,L1,IFNCT)=OVLDIA(1,IS,ICON,L1,IFNCT)*THRD
+            END DO
+           END IF
+           DO IS=1,LS
+            OVLDIA(1,IS,ICON,L1,IFNCT)=1.0D0/OVLDIA(1,IS,ICON,L1,IFNCT)
+            OVLDIA(2,IS,ICON,L1,IFNCT)=SQRT(OVLDIA(1,IS,ICON,L1,IFNCT))
+           END DO
+          END DO
+         END DO
+        END DO
+C
+C START ASSIGNING POINTS TO IDENTITY MEMBERS
+C
+        NMSH=0
+        DO 800 IID=1,NIDENT
+         IFNCT=IFUIDT(IID)
+         PRINT '(2(A,I5))','IDENTITY MEMBER ',IID,
+     &                     ', MULTIPLICITY: ',NMULT(IID)
+         PRINT '(A,F11.2)','NUCLEAR CHARGE: ',ZNUC(IFNCT)
+         NPTAT=0
+C
+C DETERMINE DISTANCE OF EACH ATOM FROM ID MEMBER, GET INATM
+C
+         RNNS= 1.0D30
+         INATM= 0
+         DO INUC= 1,NNUC
+          RSQR(INUC)= (RIDT(1,IID)-RNUC(1,INUC))**2
+     &               +(RIDT(2,IID)-RNUC(2,INUC))**2
+     &               +(RIDT(3,IID)-RNUC(3,INUC))**2
+          IF (RSQR(INUC) .GT. TOLER) THEN
+           RNNS= MIN(RNNS,RSQR(INUC))
+          ELSE
+           INATM= INUC
+          END IF
+         END DO
+         IF (INATM .EQ. 0) THEN
+          PRINT *,'DVPMESH: RIDT <--> RNUC INCONSISTENCY'
+          CALL STOPIT
+         END IF
+         RRSMAX= RNNFAC*RNNFAC*RNNS+TOLER
+         RASMAX= ANNFAC*ANNFAC*RNNS+TOLER
+C
+C RADIAL MESH: SPLIT INTO TWO PARTS
+C CORE REGION IS DEFINED BY RHO*POT/R**2 >= 10
+C WITHIN THIS REGION, OPTIMIZATION BASED ON FREE ATOM
+C
+         ERROR=ERRCOR
+         IF (LSYWT) ERROR=ERROR/NMULT(IID)
+         RDN=  0.0D0
+         RUP= 10.0D0
+         DO I= 1,40
+          RCOR= 0.5D0*(RUP+RDN)
+          CALL RPFIT(IFNCT,RCOR,1.0D0/RCOR,RHOF,POTF)
+          IF (ABS(RHOF*POTF) .LT. 10*RCOR*RCOR) THEN
+           RUP= RCOR
+          ELSE
+           RDN= RCOR
+          END IF
+         END DO
+         RA= 0.0D0
+         CALL OPTRMSH(MAXRAD,IFNCT,RA,RCOR,OVLTAB(1,1,IFNCT),ERROR,
+     &                NR1,RRAD,WRAD)
+C
+C NOW THE VALENCE REGION
+C FIRST CALL OPTVMSH WITH (IOPT .EQ. 1) TO GET AN IDEA ABOUT HOW
+C MANY POINTS MINIMUM WE'LL NEED. THEN INCREASE NUMBER OF POINTS,
+C FIND SHORTEST-RANGED MESH BY CALLING OPTVMSH WITH (IOPT .EQ. 2)
+C AND CHECK IF ALL DIAGONAL OVERLAPS ARE CALCULATED 
+C SUFFICIENTLY ACCURATE USING AN ANGULAR GRID OF SIZE LMXRAD
+C
+         ERROR=ERRAD
+         IF (LSYWT) ERROR=ERROR/NMULT(IID)
+         NR2= 0
+         CALL OPTVMSH(1,1,MAXRAD-NR1,IFNCT,RCOR,OVLTAB(1,1,IFNCT),
+     &                ERROR,NR2,RRAD(NR1+1),WRAD(NR1+1),RTRAFO)
+         RTRINIT= RTRAFO
+         CALL LEBEDEV(MAXANG,LMXRAD,NANG,RANG,WANG)
+         DO INUC= 1,NNUC
+          IF (RSQR(INUC) .LT. RRSMAX) THEN
+           JFNCT= IFINDX(INUC)
+           DO L= 0,LSYMMAX(JFNCT)
+            L1= L+1
+            LS= (L1*(L1+1))/2
+            DO ICON= 1,N_CON(L1,JFNCT)
+             DO IS= 1,LS
+              OVLSUM(1,IS,ICON,L1,INUC)= 1.0D30
+             END DO
+            END DO
+           END DO
+          END IF
+         END DO
+         NUP= -1
+         NLW= NR2
+  100    CONTINUE
+          RTRAFO= RTRINIT
+          CALL OPTVMSH(2,1,MAXRAD-NR1,IFNCT,RCOR,OVLTAB(1,1,IFNCT),
+     &                 ERROR,NR2,RRAD(NR1+1),WRAD(NR1+1),RTRAFO)
+          DO INUC= 1,NNUC
+           IF (RSQR(INUC) .LT. RRSMAX) THEN
+            JFNCT= IFINDX(INUC)
+            DO L= 0,LSYMMAX(JFNCT)
+             L1= L+1
+             LS= (L1*(L1+1))/2
+             DO ICON= 1,N_CON(L1,JFNCT)
+              DO IS= 1,LS
+               OVLSUM(2,IS,ICON,L1,INUC)= 0.0D0
+              END DO
+             END DO
+            END DO
+           END IF
+          END DO
+          DO IRAD= 1,NR2
+           CALL SPCPART(MAXANG,NANG,RANG,WANG,RRAD(NR1+IRAD),
+     &                  WRAD(NR1+IRAD),RIDT(1,IID),IFNCT,INATM,NNUC,
+     &                  RNUC,IFINDX,RCDTAB,MODPART,NDECAY,STOMSH)
+           DO INUC= 1,NNUC
+            IF (RSQR(INUC) .LT. RRSMAX) THEN
+             JFNCT= IFINDX(INUC)
+             DO IANG= 0,NANG-1,NSPEED
+              NPV= MIN(NSPEED,NANG-IANG)
+              DO IPV= 1,NPV
+               PTS(IPV,1)= STOMSH(1,IANG+IPV,2)-RNUC(1,INUC)
+               PTS(IPV,2)= STOMSH(2,IANG+IPV,2)-RNUC(2,INUC)
+               PTS(IPV,3)= STOMSH(3,IANG+IPV,2)-RNUC(3,INUC)
+              END DO
+              CALL GORBDRV(0,IUPDAT,ICOUNT,NPV,PTS,JFNCT,GRAD)
+              IF (IUPDAT) THEN
+               DO L= 0,LSYMMAX(JFNCT)
+                L1= L+1
+                LS= (L1*(L1+1))/2
+                DO ICON= 1,N_CON(L1,JFNCT)
+                 IF (ICOUNT(ICON,L1)) THEN
+                  DO IS= 1,LS
+                   SUM= 0.0D0
+                   DO IPV= 1,NPV
+                    BF2= GRAD(IPV,1,IS,ICON,L1)**2
+                    SUM= SUM+STOMSH(4,IANG+IPV,2)*BF2
+                   END DO
+                   OVLSUM(2,IS,ICON,L1,INUC)= OVLSUM(2,IS,ICON,L1,INUC)
+     &                                       +SUM
+                  END DO
+                 END IF
+                END DO
+               END DO
+              END IF
+             END DO
+            END IF
+           END DO
+          END DO
+C
+C CHECK ACCURACY
+C
+          ISUCC= .TRUE.
+          DO INUC= 1,NNUC
+           IF (RSQR(INUC) .LT. RRSMAX) THEN
+            JFNCT= IFINDX(INUC)
+            DO L= 0,LSYMMAX(JFNCT)
+             L1= L+1
+             LS= (L1*(L1+1))/2
+             DO ICON= 1,N_CON(L1,JFNCT)
+              DO IS= 1,LS
+               DIFF= OVLSUM(2,IS,ICON,L1,INUC)-OVLSUM(1,IS,ICON,L1,INUC)
+               IF (ABS(DIFF)*OVLDIA(1,IS,ICON,L1,JFNCT) .GT. ERROR) THEN
+                ISUCC= .FALSE.
+                GOTO 150
+               END IF
+              END DO
+             END DO
+            END DO
+           END IF
+          END DO
+C
+C IF WE DON'T HAVE AN UPPER LIMIT YET, UPDATE REFERENCE INTEGRALS
+C
+  150     IF (NUP .EQ. -1) THEN
+           DO INUC= 1,NNUC
+            IF (RSQR(INUC) .LT. RRSMAX) THEN
+             JFNCT= IFINDX(INUC)
+             DO L= 0,LSYMMAX(JFNCT)
+              L1= L+1
+              LS= (L1*(L1+1))/2
+              DO ICON= 1,N_CON(L1,JFNCT)
+               DO IS= 1,LS
+                OVLSUM(1,IS,ICON,L1,INUC)= OVLSUM(2,IS,ICON,L1,INUC)
+               END DO
+              END DO
+             END DO
+            END IF
+           END DO
+          END IF
+C
+          IF (ISUCC) THEN
+C
+C THIS MESH WAS ACCURATE ENOUGH
+C
+           IF (NUP .EQ. -1) NUP= NR2
+           IF (NUP-NLW .GE. 2) THEN
+            NUP= NR2
+            NR2= (NUP+NLW)/2
+            GOTO 100
+           END IF
+          ELSE
+C
+C THIS MESH WAS NOT ACCURATE ENOUGH
+C
+           IF (NUP .EQ. -1) THEN
+            NR2= NR2+10
+            GOTO 100
+           ELSE
+            NLW= NR2
+            IF (NUP-NLW .GE. 2) THEN
+             NR2= (NUP+NLW)/2
+             GOTO 100
+            ENDIF
+           ENDIF
+          ENDIF
+         CONTINUE
+C
+C THE NUMBER OF POINTS TO USE IS NUP
+C
+         NR2= NUP
+         RTRAFO= RTRINIT
+         CALL OPTVMSH(2,1,MAXRAD-NR1,IFNCT,RCOR,OVLTAB(1,1,IFNCT),
+     &                ERROR,NR2,RRAD(NR1+1),WRAD(NR1+1),RTRAFO)
+C
+C DONE WITH RADIAL MESH
+C
+         NRAD= NR1+NR2
+         PRINT '(A,I5)','NUMBER OF RADIAL POINTS: ',NRAD
+         ERROR= ERRANG/NRAD
+         IF (LSYWT) ERROR= ERROR/NMULT(IID)
+C
+C FOR EACH RADIAL POINT, OPTIMIZE ANGULAR MESH
+C
+         DO 700 IRAD=1,NRAD
+C
+C ZERO OVERLAP ARRAYS
+C
+          DO LA= 0,LSYMMAX(IFNCT)
+           L1A= LA+1
+           LSA= (L1A*(L1A+1))/2
+           DO ICONA= 1,N_CON(L1A,IFNCT)
+            DO LB= LA+1,LSYMMAX(IFNCT)
+             L1B= LB+1
+             LSB= (L1B*(L1B+1))/2
+             DO ICONB= 1,N_CON(L1B,IFNCT)
+              DO ISA= 1,LSA
+               DO ISB= 1,LSB
+                ONSOVL(1,ISB,ISA,ICONB,L1B,ICONA,L1A)= 1.0D30
+               END DO
+              END DO
+             END DO
+            END DO
+           END DO
+          END DO
+          DO INUC= 1,NNUC
+           IF (RSQR(INUC) .LT. RASMAX) THEN
+            JFNCT= IFINDX(INUC)
+            DO L= 0,LSYMMAX(JFNCT)
+             L1= L+1
+             LS= (L1*(L1+1))/2
+             DO ICON= 1,N_CON(L1,JFNCT)
+              DO IS= 1,LS
+               OVLSUM(1,IS,ICON,L1,INUC)= 1.0D30
+              END DO
+             END DO
+            END DO
+           END IF
+          END DO
+C
+C LOOP OVER ALL ANGULAR MESHES UNTIL WE FIND A GOOD ONE
+C
+          LCUR=0
+          NSTO=0
+  300     CONTINUE
+           CALL LEBEDEV(MAXANG,LCUR,NANG,RANG,WANG)
+           IF (LCUR .GT. LMXANG) THEN
+            ISUCC= .TRUE.
+            GOTO 500
+           END IF
+           NTOT=NMSH+NANG   
+           IF (NTOT .GT. MAX_PTS) THEN
+            PRINT *,'DVPMESH: MAX_PTS MUST BE AT LEAST: ',NTOT
+            CALL STOPIT
+           END IF
+C
+C SPACE PARTITIONING
+C
+           CALL SPCPART(MAXANG,NANG,RANG,WANG,RRAD(IRAD),WRAD(IRAD),
+     &                  RIDT(1,IID),IFNCT,INATM,NNUC,RNUC,IFINDX,
+     &                  RCDTAB,MODPART,NDECAY,STOMSH)
+C
+C CHECK IF ANGULAR RESOLUTION IS GOOD ENOUGH FOR OVERLAP INTEGRATION
+C START BY DETERMINING NONDIAGONAL ONSITE ELEMENTS
+C
+           DO LA=0,LSYMMAX(IFNCT)
+            L1A=LA+1
+            LSA=(L1A*(L1A+1))/2
+            DO ICONA=1,N_CON(L1A,IFNCT)
+             DO LB=LA+1,LSYMMAX(IFNCT)
+              L1B=LB+1
+              LSB=(L1B*(L1B+1))/2
+              DO ICONB=1,N_CON(L1B,IFNCT)
+               DO ISA=1,LSA
+                DO ISB=1,LSB
+                 ONSOVL(2,ISB,ISA,ICONB,L1B,ICONA,L1A)= 0.0D0
+                END DO
+               END DO
+              END DO
+             END DO
+            END DO
+           END DO
+C
+           DO 440 IANG=0,NANG-1,NSPEED
+            NPV=MIN(NSPEED,NANG-IANG)
+            DO IPV=1,NPV
+             PTS(IPV,1)=STOMSH(1,IANG+IPV,2)-RIDT(1,IID)
+             PTS(IPV,2)=STOMSH(2,IANG+IPV,2)-RIDT(2,IID)
+             PTS(IPV,3)=STOMSH(3,IANG+IPV,2)-RIDT(3,IID)
+            END DO
+            CALL GORBDRV(0,IUPDAT,ICOUNT,NPV,PTS,IFNCT,GRAD)
+            IF (IUPDAT) THEN
+             DO LA=0,LSYMMAX(IFNCT)
+              L1A=LA+1
+              LSA=(L1A*(L1A+1))/2
+              DO ICONA=1,N_CON(L1A,IFNCT)
+               IF (ICOUNT(ICONA,L1A)) THEN
+                DO LB=LA+1,LSYMMAX(IFNCT)
+                 L1B=LB+1
+                 LSB=(L1B*(L1B+1))/2
+                 DO ICONB=1,N_CON(L1B,IFNCT)
+                  IF (ICOUNT(ICONB,L1B)) THEN
+                   DO ISA=1,LSA
+                    DO ISB=1,LSB
+                     SUM= 0.0D0
+                     DO IPV=1,NPV
+                      SUM=SUM+STOMSH(4,IANG+IPV,2)
+     &                       *GRAD(IPV,1,ISA,ICONA,L1A)
+     &                       *GRAD(IPV,1,ISB,ICONB,L1B)
+                     END DO
+                     ONSOVL(2,ISB,ISA,ICONB,L1B,ICONA,L1A)= 
+     &                ONSOVL(2,ISB,ISA,ICONB,L1B,ICONA,L1A)+SUM
+                    END DO
+                   END DO
+                  END IF
+                 END DO
+                END DO
+               END IF
+              END DO
+             END DO
+            END IF
+  440      CONTINUE
+C
+C NEXT: ALL DIAGONAL ELEMENTS OF OVERLAP MATRIX
+C
+           DO 480 INUC=1,NNUC
+            IF (RSQR(INUC) .LT. RASMAX) THEN
+             JFNCT= IFINDX(INUC)
+             DO L=0,LSYMMAX(JFNCT)
+              L1=L+1
+              LS=(L1*(L1+1))/2
+              DO ICON=1,N_CON(L1,JFNCT)
+               DO IS=1,LS
+                OVLSUM(2,IS,ICON,L1,INUC)= 0.0D0 
+               END DO
+              END DO
+             END DO
+             DO IANG=0,NANG-1,NSPEED
+              NPV=MIN(NSPEED,NANG-IANG)
+              DO IPV=1,NPV
+               PTS(IPV,1)=STOMSH(1,IANG+IPV,2)-RNUC(1,INUC)
+               PTS(IPV,2)=STOMSH(2,IANG+IPV,2)-RNUC(2,INUC)
+               PTS(IPV,3)=STOMSH(3,IANG+IPV,2)-RNUC(3,INUC)
+              END DO
+              CALL GORBDRV(0,IUPDAT,ICOUNT,NPV,PTS,JFNCT,GRAD)
+              IF (IUPDAT) THEN
+               DO L=0,LSYMMAX(JFNCT)
+                L1=L+1
+                LS=(L1*(L1+1))/2
+                DO ICON=1,N_CON(L1,JFNCT)
+                 IF (ICOUNT(ICON,L1)) THEN
+                  DO IS=1,LS
+                   SUM= 0.0D0
+                   DO IPV=1,NPV
+                    BF=GRAD(IPV,1,IS,ICON,L1)
+                    BF2=BF*BF
+                    SUM=SUM+STOMSH(4,IANG+IPV,2)*BF2
+                    BF2=BF2*OVLDIA(1,IS,ICON,L1,JFNCT)
+                    STOMSH(6,IANG+IPV,2)=MAX(STOMSH(6,IANG+IPV,2),BF2)
+                   END DO
+                   OVLSUM(2,IS,ICON,L1,INUC)= OVLSUM(2,IS,ICON,L1,INUC)
+     &                                       +SUM
+                  END DO
+                 END IF
+                END DO
+               END DO
+              END IF
+             END DO
+            END IF
+  480      CONTINUE
+C
+C CHECK IF CHANGE IN ONSOVL AND OVLSUM IS LESS THAN ERROR*(TOTAL INTEGRAL)
+C
+           ISUCC= .TRUE.
+           DO LA=0,LSYMMAX(IFNCT)
+            L1A=LA+1
+            LSA=(L1A*(L1A+1))/2
+            DO ICONA=1,N_CON(L1A,IFNCT)
+             DO LB=LA+1,LSYMMAX(IFNCT)
+              L1B=LB+1
+              LSB=(L1B*(L1B+1))/2
+              DO ICONB=1,N_CON(L1B,IFNCT)
+               DO ISA=1,LSA
+                DO ISB=1,LSB
+                 DIFF=ONSOVL(2,ISB,ISA,ICONB,L1B,ICONA,L1A)
+     &               -ONSOVL(1,ISB,ISA,ICONB,L1B,ICONA,L1A)
+                 SREF=OVLDIA(2,ISA,ICONA,L1A,IFNCT)
+     &               *OVLDIA(2,ISB,ICONB,L1B,IFNCT)
+                 IF (ABS(DIFF)*SREF .GT. ERROR) THEN
+                  ISUCC= .FALSE.
+                  GOTO 500
+                 END IF
+                END DO
+               END DO
+              END DO
+             END DO
+            END DO
+           END DO
+C
+           DO INUC=1,NNUC
+            IF (RSQR(INUC) .LT. RASMAX) THEN
+             JFNCT= IFINDX(INUC)
+             DO L=0,LSYMMAX(JFNCT)
+              L1=L+1
+              LS=(L1*(L1+1))/2
+              DO ICON=1,N_CON(L1,JFNCT)
+               DO IS=1,LS
+                DIFF=OVLSUM(2,IS,ICON,L1,INUC)-OVLSUM(1,IS,ICON,L1,INUC)
+                DIFF=ABS(DIFF)*OVLDIA(1,IS,ICON,L1,JFNCT)
+                IF (DIFF .GT. ERROR) THEN
+                 ISUCC= .FALSE.
+                 GOTO 500
+                END IF
+               END DO
+              END DO
+             END DO
+            END IF
+           END DO
+C
+C SUCCESS        --> USE THE LAST MESH
+C LCUR >= LMXANG --> USE THE CURRENT MESH
+C PURGE SYMMETRY-EQUIVALENT POINTS
+C
+  500      IF (ISUCC .OR. (LCUR .GE. LMXANG)) THEN
+            IF (ISUCC) THEN
+             NANG=NSTO
+             INDX=1
+            ELSE
+             INDX=2
+            END IF
+            RRC= 1.0D0/RRAD(IRAD)
+            DO IANG=1,NANG
+             DO IC=1,3
+              RANG(IC,IANG)=RIDT(IC,IID)
+     &                     +(STOMSH(IC,IANG,INDX)-RIDT(IC,IID))*RRC
+             END DO
+             WANG(IANG)=STOMSH(4,IANG,INDX)
+            END DO
+C
+C FOR ALL NON-IDENTITY SYMMETRY OPERATIONS:
+C * CHECK IF SYMMETRY OPERATION LEAVES RIDT UNCHANGED
+C * IF SO, CHECK IF POINTS CAN BE REDUCED
+C
+            DO 650 IGRP=2,NGRP
+             DO I=1,3
+              RTMP=0.0D0
+              DO J=1,3
+               RTMP=RTMP+RMAT(J,I,IGRP)*RIDT(J,IID)
+              END DO
+              IF (ABS(RTMP-RIDT(I,IID)) .GT. TOLER) GOTO 650
+             END DO
+             DO IANG=1,NANG
+              IF (WANG(IANG) .GT. 0.0D0) THEN
+               DO 630 JANG=IANG+1,NANG
+                IF (WANG(JANG) .GT. 0.0D0) THEN 
+                 DO I=1,3
+                  RTMP=0.0D0
+                  DO J=1,3
+                   RTMP=RTMP+RMAT(J,I,IGRP)*RANG(J,JANG)
+                  END DO
+                  IF (ABS(RTMP-RANG(I,IANG)) .GT. TOLER) GOTO 630
+                 END DO
+                 WANG(IANG)=WANG(IANG)+WANG(JANG)
+                 WANG(JANG)= -1.0D0
+                 STOMSH(5,IANG,INDX)=STOMSH(5,IANG,INDX)
+     &                              +STOMSH(5,JANG,INDX)
+                 STOMSH(6,IANG,INDX)=STOMSH(6,IANG,INDX)
+     &                              +STOMSH(6,JANG,INDX)
+                END IF
+  630          CONTINUE
+              END IF
+             END DO
+  650       CONTINUE
+            NTOT=0
+            DO IANG=1,NANG
+             IF (WANG(IANG) .GT. 0.0D0) THEN
+              WANG(IANG)=WANG(IANG)*NMULT(IID)
+              POTMX=MAX(1.0D0,STOMSH(5,IANG,INDX))
+              POTMX=POTMX*STOMSH(6,IANG,INDX)
+              IF (WANG(IANG)*POTMX .GT. ERROR) THEN
+               NTOT=NTOT+1
+               RMSH(1,NMSH+NTOT)= STOMSH(1,IANG,INDX)
+               RMSH(2,NMSH+NTOT)= STOMSH(2,IANG,INDX)
+               RMSH(3,NMSH+NTOT)= STOMSH(3,IANG,INDX)
+               WMSH(NMSH+NTOT)= WANG(IANG)
+              END IF
+             END IF
+            END DO
+            NMSH=NMSH+NTOT
+            NPTAT=NPTAT+NTOT
+            GOTO 680
+           END IF
+C
+C FAILURE: MOVE STOMSH, ONSOVL, AND OVLSUM AND INCREASE LCUR
+C
+           NSTO=NANG
+           DO IANG=1,NSTO
+            DO I=1,6
+             STOMSH(I,IANG,1)=STOMSH(I,IANG,2)
+            END DO
+           END DO
+C
+           DO LA=0,LSYMMAX(IFNCT)
+            L1A=LA+1
+            LSA=(L1A*(L1A+1))/2
+            DO ICONA=1,N_CON(L1A,IFNCT)
+             DO LB=LA+1,LSYMMAX(IFNCT)
+              L1B=LB+1
+              LSB=(L1B*(L1B+1))/2
+              DO ICONB=1,N_CON(L1B,IFNCT)
+               DO ISA=1,LSA
+                DO ISB=1,LSB
+                 ONSOVL(1,ISB,ISA,ICONB,L1B,ICONA,L1A)=
+     &            ONSOVL(2,ISB,ISA,ICONB,L1B,ICONA,L1A)
+                END DO
+               END DO
+              END DO
+             END DO
+            END DO
+           END DO
+C
+           DO INUC=1,NNUC
+            IF (RSQR(INUC) .LT. RASMAX) THEN
+             JFNCT= IFINDX(INUC)
+             DO L=0,LSYMMAX(JFNCT)
+              L1=L+1
+              LS=(L1*(L1+1))/2
+              DO ICON=1,N_CON(L1,JFNCT)
+               DO IS=1,LS
+                OVLSUM(1,IS,ICON,L1,INUC)= OVLSUM(2,IS,ICON,L1,INUC)
+               END DO
+              END DO
+             END DO
+            END IF
+           END DO
+C
+           LCUR= LCUR+1
+           GOTO 300
+  680     CONTINUE
+  700    CONTINUE
+C
+         PRINT '(A,I5,A,I10)','NUMBER OF POINTS FOR ID MEMBER ',
+     &                        IID,':',NPTAT
+         PRINT '(A)',' '
+  800   CONTINUE
+        PRINT '(A,I15)','TOTAL NUMBER OF MESH POINTS: ',NMSH
+        PRINT '(A)',' '
+C
+C REORDER MESH POINTS
+C
+        PRINT '(A)','REORDERING MESH POINTS'
+        CALL GTTIME(TIME2)
+        CALL REORMSH
+        CALL GTTIME(TIME3)
+C
+C TEST MESH (CHECK NUMERICAL OVERLAP MATRIX)
+C
+        PRINT *,' '
+        PRINT '(A)','COMPARISON OF ANALYTICAL AND NUMERICAL OVERLAPS'
+        PRINT '(A)','-----------------------------------------------'
+        CALL TSTMSH
+        PRINT *,' '
+C       
+C WRITE VMOLD AND LEAVE
+C
+        OPEN(99,FILE='OLDMESH',FORM='UNFORMATTED',STATUS='UNKNOWN')
+        REWIND(99)
+        WRITE(99)NMSH,ICALC
+        WRITE(99)((RMSH(J,I),J=1,3),I=1,NMSH)
+        WRITE(99)(WMSH(I),I=1,NMSH)
+        CLOSE(99)
+  900   CALL GTTIME(TIME4)
+        CALL TIMOUT('MESH REORDERING:                   ',TIME3-TIME2)
+        CALL TIMOUT('MESH READING / TESTING + WRITING:  ',TIME4-TIME3)
+        CALL TIMOUT('CONSTRUCTION OF VARIATIONAL MESH:  ',TIME4-TIME1)
+c
+c mpi: send mesh to all nodes
+c
+%ifdef MPI
+c
+        CALL SENDDATA(102)
+c
+%endif
+c
+        RETURN
+       END
+C
+C ********************************************************************
+C
+       SUBROUTINE SPCPART(MAXANG,NANG,RANG,WANG,RRAD,WRAD,RATM,IFATM,
+     &                    INATM,NNTB,RNTB,IFNTB,RCDTAB,
+     &                    MODPART,NDECAY,STOMSH)
+        INCLUDE 'PARAMS'
+        INCLUDE 'commons.inc'
+        DIMENSION RANG(3,MAXANG),WANG(MAXANG),RATM(3)
+        DIMENSION RCDTAB(MX_CNT,MX_CNT)
+        DIMENSION RNTB(3,MX_CNT),STOMSH(6,MAXANG,2),IFNTB(MX_CNT)
+        DIMENSION RVEC(3),WPROD(MX_CNT),RSAV(MX_CNT)
+C
+C CALCULATION OF PARTITION FUNCTION 
+C
+        DO 400 IANG=1,NANG
+         RVEC(1)= RATM(1)+RRAD*RANG(1,IANG)
+         RVEC(2)= RATM(2)+RRAD*RANG(2,IANG)
+         RVEC(3)= RATM(3)+RRAD*RANG(3,IANG)
+         R1= RRAD
+         POTMX= 0.0D0
+         IF (MODPART .EQ. 1) THEN
+C
+C RHO*POT/R**NDECAY PARTITIONING
+C
+          SUM= 0.0D0
+          DO INUC= 1,NNTB
+           R2= (RVEC(1)-RNTB(1,INUC))**2
+     &        +(RVEC(2)-RNTB(2,INUC))**2
+     &        +(RVEC(3)-RNTB(3,INUC))**2
+           R2= SQRT(R2)
+           R2RC= 1.0D0/R2
+           CALL RPFIT(IFNTB(INUC),R2,R2RC,RHOF,POTF)
+           POTF= ABS(POTF)
+           POTMX= MAX(POTMX,POTF)
+           DO I= 1,NDECAY
+            POTF= POTF*R2RC
+           END DO
+           SUM= SUM+RHOF*POTF
+          END DO
+          R1RC= 1.0D0/R1
+          CALL RPFIT(IFATM,R1,R1RC,RHOF,POTF)
+          RATIO= RHOF*POTF
+          DO I= 1,NDECAY
+           RATIO= RATIO*R1RC
+          END DO
+          RATIO= ABS(RATIO)*WANG(IANG)*WRAD/SUM
+         ELSE IF (MODPART .EQ. 2) THEN
+C
+C RHO/R**NDECAY PARTITIONING
+C
+          SUM= 0.0D0
+          DO INUC= 1,NNTB
+           R2= (RVEC(1)-RNTB(1,INUC))**2
+     &        +(RVEC(2)-RNTB(2,INUC))**2
+     &        +(RVEC(3)-RNTB(3,INUC))**2
+           R2= SQRT(R2)
+           R2RC= 1.0D0/R2
+           CALL RPFIT(IFNTB(INUC),R2,R2RC,RHOF,POTF)
+           POTF= ABS(POTF)
+           POTMX= MAX(POTMX,POTF)
+           DO I= 1,NDECAY
+            RHOF= RHOF*R2RC
+           END DO
+           SUM= SUM+RHOF
+          END DO
+          R1RC= 1.0D0/R1
+          CALL RPFIT(IFATM,R1,R1RC,RHOF,POTF)
+          RATIO= RHOF
+          DO I= 1,NDECAY
+           RATIO= RATIO*R1RC
+          END DO
+          RATIO= ABS(RATIO)*WANG(IANG)*WRAD/SUM
+         ELSE 
+C
+C BECKE PARTITIONING 
+C
+          DO INUC= 1,NNTB
+           R2= (RVEC(1)-RNTB(1,INUC))**2
+     &        +(RVEC(2)-RNTB(2,INUC))**2
+     &        +(RVEC(3)-RNTB(3,INUC))**2
+           RSAV(INUC)= R2
+          END DO
+          WPRD= 1.0D0
+          DO 320 INUC= 1,NNTB
+           WPROD(INUC)= 1.0D0
+           RSAV(INUC)= SQRT(RSAV(INUC))
+           R2= RSAV(INUC)
+           CALL RPFIT(IFNTB(INUC),R2,1.0D0/R2,RHOF,POTF)
+           POTMX= MAX(POTMX,ABS(POTF))
+           IF (INUC .EQ. INATM) GOTO 320
+           X= (R1-R2)*RCDTAB(INUC,INATM)
+           DO I= 1,NDECAY
+            X= X*(1.5D0-0.5D0*X*X)
+           END DO
+           WPRD= WPRD*0.5D0*(1.0D0-X)
+  320     CONTINUE
+C
+          DO 350 INUC=1,NNTB
+           R1= RSAV(INUC)
+           DO 340 JNUC=INUC+1,NNTB
+            IF ((WPROD(INUC) .LE. 0.0D0) .AND.
+     &          (WPROD(JNUC) .LE. 0.0D0)) GOTO 340
+            X= (R1-RSAV(JNUC))*RCDTAB(JNUC,INUC)
+            DO I= 1,NDECAY
+             X= X*(1.5D0-0.5D0*X*X)
+            END DO
+            W= 0.5D0*(1.0D0-X)
+            WPROD(INUC)= WPROD(INUC)*W
+            WPROD(JNUC)= WPROD(JNUC)*(1.0D0-W)
+  340      CONTINUE
+  350     CONTINUE
+          SUM= 0.0D0
+          DO INUC= 1,NNTB
+           SUM= SUM+WPROD(INUC)
+          END DO
+          RATIO= WANG(IANG)*WRAD*WPRD/SUM
+         END IF
+C
+C STORE POINT
+C
+         STOMSH(1,IANG,2)= RVEC(1)
+         STOMSH(2,IANG,2)= RVEC(2)
+         STOMSH(3,IANG,2)= RVEC(3)
+         STOMSH(4,IANG,2)= RATIO
+         STOMSH(5,IANG,2)= POTMX 
+         STOMSH(6,IANG,2)= 0.0D0
+  400   CONTINUE
+        RETURN
+       END
+C
+C ********************************************************************
+C
+       SUBROUTINE RGCMSH(IMSH,NPTS,RST,RMID,RRET,WRET)
+        IMPLICIT REAL*8 (A-H,O-Z)
+        DIMENSION RRET(*),WRET(*)
+        SAVE
+C
+C WRITTEN BY DV POREZAG 
+C THIS SUBROUTINE RETURNS A ONE DIMENSIONAL MESH SUITABLE FOR INTEGRATING
+C FUNCTIONS OF THE FORM:
+C
+C  INF
+C  INT  DR * R**2 * F(R)
+C  RST
+C
+C METHOD: 
+C IF (IMSH .EQ. 1) WE USE A GAUSS-CHEBYSHEV QUADRATURE OF THE SECOND KIND:
+C
+C       2     /                    2              3 \
+C  X= ---- * | 3*ASIN(Z) + SQRT(1-Z ) * (5*Z - 2*Z ) |
+C     3*PI    \                                     /
+C
+C RESULTING IN POINTS AND WEIGHTS:
+C
+C      N+1-2*I    2    /    2    2 I*PI \        I*PI       I*PI
+C  X = ------- + -- * | 1 + - SIN  ----  | * SIN ---- * COS ----
+C   I    N+1     PI    \    3       N+1 /         N+1        N+1
+C
+C         16        4 I*PI
+C  W = ------- * SIN  ----       WHERE (1 <= I <= N)
+C   I  3*(N+1)         N+1
+C
+C IF (IMSH .EQ. 2) WE USE GAUSS-LEGENDRE POINTS INSTEAD.
+C THE MESH IS TRANSFORMED VIA:
+C
+C     RMID                               / RMID * LOG(2) \
+C R= ------ * LOG(B*(1-X))  WHERE B= EXP|  -------------  |
+C    LOG(B)                              \   RST - RMID  /
+C
+C ********************************************************************
+C
+        IF (NPTS .LT. 1) RETURN
+        IF (RST .LT. 0.0D0) THEN
+         PRINT *,'RGCMSH: RST MUST BE >= 0'
+         CALL STOPIT
+        END IF
+        IF (RMID .LE. RST) THEN
+         PRINT *,'RGCMSH: RMID MUST BE > RST'
+         CALL STOPIT
+        END IF
+C
+C TRANSFORMED GAUSS-CHEBYSHEV QUADRATURE OF THE SECOND KIND
+C
+        IF (IMSH .EQ. 1) THEN
+         PI= 4*ATAN(1.0D0)
+         N2= (NPTS+1)/2
+         REC= 1.0D0/(NPTS+1)
+         PREC= PI*REC
+         FAC= 2.0D0/PI
+         TWTH= 2.0D0/3.0D0
+         WFAC= 16.0D0/3.0D0*REC
+         DO I= 1,N2
+          X= (NPTS+1-I)*PREC
+          S= SIN(X)
+          C= COS(X)
+          S2= S*S
+          RRET(I)= (2*I-1-NPTS)*REC+FAC*(1.0D0+TWTH*S2)*S*C
+          WRET(I)= WFAC*S2*S2
+          RRET(NPTS-I+1)= -RRET(I)
+          WRET(NPTS-I+1)=  WRET(I)
+         END DO
+        ELSE
+         CALL GAUSSP(-1.0D0,1.0D0,NPTS,RRET,WRET)
+        ENDIF
+C
+C RADIAL TRANSFORMATION
+C
+        B= EXP(RMID*LOG(2.0D0)/(RST-RMID))
+        FAC= RMID/LOG(B)
+        DO I= 1,NPTS
+         OMX= 1.0D0-RRET(I)
+         RRET(I)= FAC*LOG(B*OMX)
+         WRET(I)= -FAC*WRET(I)/OMX
+         WRET(I)= WRET(I)*RRET(I)**2
+        END DO
+        RETURN
+       END
+C
+C ********************************************************************
+C
+       SUBROUTINE OVLONS(IFNCT,OVLTAB)
+C
+C CREATE TABLE OF ONSITE OVERLAP INTEGRALS
+C
+        INCLUDE 'PARAMS'
+        INCLUDE 'commons.inc'
+        DIMENSION OVLTAB(MAX_CON,LDIM)
+C 
+        PI= 4*ATAN(1.0D0) 
+        DO L= 0,LSYMMAX(IFNCT)
+         L1= L+1
+         DO ICON= 1,N_CON(L1,IFNCT)
+          OVLTAB(ICON,L1)= 0.0D0
+         END DO
+        END DO
+        DO IBARE= 1,N_BARE(IFNCT)
+         DO JBARE= IBARE,N_BARE(IFNCT)
+          ALP= BFALP(IBARE,IFNCT)+BFALP(JBARE,IFNCT)
+          ALRC= 1.0D0/ALP
+          FACO= 2*PI*SQRT(PI*ALRC)
+          IF (IBARE .NE. JBARE) THEN
+           FACO= 2*FACO
+          END IF
+          DO L= 0,LSYMMAX(IFNCT)
+           FACO= 0.5D0*ALRC*(2*L+1)*FACO
+           L1= L+1
+           DO ICON= 1,N_CON(L1,IFNCT)
+            P= BFCON(IBARE,ICON,L1,IFNCT)*BFCON(JBARE,ICON,L1,IFNCT)
+            OVLTAB(ICON,L1)= OVLTAB(ICON,L1)+FACO*P
+           END DO
+          END DO
+         END DO
+        END DO
+        RETURN
+       END
+C
+C ********************************************************************
+C
+       SUBROUTINE OPTRIGR(MODE,IFNCT,NRAD,RRAD,WRAD,SUMTAB)
+C
+C SUBROUTINE THAT DETERMINES THE NUMERICAL INTEGRALS NEEDED BY OPTRMSH,
+C OPTVMSH, AND OPTMMSH
+C MODE: 1 IF WEIGHTS NEED TO BE MULTIPLIED BY 4*PI*RRAD**2
+C       2 IF WEIGHTS NEED TO BE MULTIPLIED BY 4*PI
+C
+        INCLUDE 'PARAMS'
+        INCLUDE 'commons.inc'
+        DIMENSION RRAD(NRAD),WRAD(NRAD),SUMTAB(2,MAX_CON,LDIM)
+        DIMENSION VLSAV(NSPEED),TABEXP(MAX_BARE)
+C
+        PI= 4*ATAN(1.0D0)
+        DO L= 0,LSYMMAX(IFNCT)
+         L1= L+1
+         DO ICON= 1,N_CON(L1,IFNCT)
+          SUMTAB(1,ICON,L1)= 0.0D0
+          SUMTAB(2,ICON,L1)= 0.0D0
+         END DO
+        END DO
+C
+        DO IRAD= 0,NRAD-1,NSPEED
+         NPV= MIN(NSPEED,NRAD-IRAD)
+         CALL VLOCAL(1,NPV,IFNCT,RRAD(IRAD+1),VLSAV)
+         DO IR= 1,NPV
+          R2= RRAD(IRAD+IR)**2
+          DO IBARE= 1,N_BARE(IFNCT)
+           FAC= BFALP(IBARE,IFNCT)*R2
+           IF (FAC .GT. CUTEXP) THEN
+            TABEXP(IBARE)= 0.0D0
+           ELSE
+            TABEXP(IBARE)= EXP(-FAC)
+           END IF
+          END DO
+          W= 4*PI*WRAD(IRAD+IR)
+          IF (MODE .EQ. 1) W= W*R2
+          DO L= 0,LSYMMAX(IFNCT)
+           L1= L+1
+           DO ICON= 1,N_CON(L1,IFNCT)
+            SUM= 0.0D0
+            DO IBARE= 1,N_BARE(IFNCT)
+             SUM= SUM+BFCON(IBARE,ICON,L1,IFNCT)*TABEXP(IBARE)
+            END DO
+            SUM= W*SUM*SUM
+            SUMTAB(1,ICON,L1)= SUMTAB(1,ICON,L1)+SUM
+            SUMTAB(2,ICON,L1)= SUMTAB(2,ICON,L1)+SUM*VLSAV(IR)
+           END DO
+           W= W*R2
+          END DO
+         END DO
+        END DO
+        RETURN
+       END
+C
+C ********************************************************************
+C
+       SUBROUTINE OPTRMSH(NRSIZ,IFNCT,RA,RB,OVLTAB,ERRMAX,
+     &                    NRAD,RRAD,WRAD)
+C
+C CREATE OPTIMIZED RADIAL MESH FOR INTEGRATION IN THE INTERVAL (RA,RB)
+C
+        INCLUDE 'PARAMS'
+        INCLUDE 'commons.inc'
+        PARAMETER (NTRUE=96)
+        PARAMETER (NCOMP=48)
+        PARAMETER (NSEARCH=50)
+        DIMENSION OVLTAB(MAX_CON,LDIM)
+        DIMENSION RRAD(NRSIZ),WRAD(NRSIZ)
+        DIMENSION XT(NTRUE),WT(NTRUE),XC(NCOMP),WC(NCOMP)
+        DIMENSION SUMTAB(2,MAX_CON,LDIM,2),WOVL(MAX_CON,LDIM)
+        LOGICAL OK
+        DATA TINY /1.0D-10/
+C
+C CHECK INPUT PARAMETERS
+C
+        IF (RA .GE. RB)    RETURN
+        IF (RA .LT. 0.0D0) RETURN
+        IF (ERRMAX .LT. TINY) THEN
+         PRINT *,'OPTRMSH: DESIRED ACCURACY IS TOO SMALL: ',ERRMAX
+         PRINT *,'         MUST NOT BE SMALLER THAN: ',TINY
+         CALL STOPIT
+        END IF
+C
+C SETUP OF WOVL 
+C
+        DO L= 0,LSYMMAX(IFNCT)
+         L1= L+1
+         DO ICON= 1,N_CON(L1,IFNCT)
+          WOVL(ICON,L1)= 1.0D0/OVLTAB(ICON,L1)
+         END DO
+        END DO
+C
+C START OF MESH GENERATION 
+C
+        NRAD= 0
+        RMIN= RA
+        RMAX= RB
+  100   CONTINUE
+C
+C CHECK IF THE INTEGRAL IS THE SAME WITH A NCOMP AND A NTRUE POINT MESH
+C IF NOT, REDUCE RMAX AND TRY AGAIN
+C
+         CALL GAUSSP(RMIN,RMAX,NTRUE,XT,WT)
+         CALL GAUSSP(RMIN,RMAX,NCOMP,XC,WC)
+         CALL OPTRIGR(1,IFNCT,NTRUE,XT,WT,SUMTAB(1,1,1,1))
+         CALL OPTRIGR(1,IFNCT,NCOMP,XC,WC,SUMTAB(1,1,1,2))
+         DO L= 0,LSYMMAX(IFNCT)
+          L1= L+1
+          MUL= 4*L+2
+          DO ICON= 1,N_CON(L1,IFNCT)
+           DO I= 1,2
+            ERRG= (SUMTAB(I,ICON,L1,1)-SUMTAB(I,ICON,L1,2))
+     &            *WOVL(ICON,L1)*MUL
+            IF (ABS(ERRG) .GT. ERRMAX) THEN
+             RMAX= 0.5D0*(RMIN+RMAX)
+             GOTO 100
+            END IF
+           END DO
+          END DO
+         END DO
+C
+C WE NOW KNOW THAT A NCOMP POINT MESH CAN'T FAIL ...
+C NOW TRY MESHES BETWEEN 0 AND NCOMP POINTS
+C IF (MPT .EQ. 0), CHECK ONLY SIMPLE GAUSS QUADRATURE
+C
+         OK= .FALSE.
+         DO 400 MPT= 0,NCOMP
+          ITYPE= 0
+          EBST= ERRMAX
+C
+C DEAL WITH GAUSS MESH
+C
+          CALL GAUSSP(RMIN,RMAX,MPT,XC,WC)
+          CALL OPTRIGR(1,IFNCT,MPT,XC,WC,SUMTAB(1,1,1,2))
+          ERRG= 0.0D0
+          DO L= 0,LSYMMAX(IFNCT)
+           L1= L+1
+           MUL= 4*L+2
+           DO ICON= 1,N_CON(L1,IFNCT)
+            DO I= 1,2
+             AA= (SUMTAB(I,ICON,L1,1)-SUMTAB(I,ICON,L1,2))
+     &           *WOVL(ICON,L1)*MUL
+             ERRG= MAX(ERRG,ABS(AA))
+            END DO
+           END DO
+          END DO
+          IF (MPT .EQ. 0) THEN
+           IF (ERRG .LT. ERRMAX) GOTO 500
+           GOTO 400
+          END IF
+C
+C CHECK IF GAUSS-LEGENDRE MESH IS ACCURATE ENOUGH
+C
+          IF (ERRG .LT. EBST) THEN
+           OK= .TRUE.
+           ITYPE= 1
+           EBST= ERRG
+           DO IPT= 1,MPT
+            XT(IPT)= XC(IPT)
+            WT(IPT)= WC(IPT)
+           END DO
+          END IF
+C
+C NOW DEAL WITH OPTIMIZED MESH
+C NSEARCH OPTIMIZATION STEPS
+C
+          ERRO= 0.0D0
+          ERT1= 1.0D30
+          ERT2= 1.0D30
+          DO 200 IMN= 1,NSEARCH
+           CALL MINIMIZE(IMN,1.0D0,ALOPT,ERRO)
+           ALORC= 1.0D0/ALOPT
+C
+C SWITCH LIMITS TO FOR EXPONENTIAL MESH
+C CALL GAUSSP AND TRANSFORM POINTS/WEIGHTS
+C
+           AA= EXP(-ALOPT*RMAX)
+           BB= EXP(-ALOPT*RMIN)
+           CALL GAUSSP(AA,BB,MPT,XC,WC)
+           DO I= 1,MPT
+            WC(I)= WC(I)/(XC(I)*ALOPT)
+            XC(I)= -ALORC*LOG(XC(I))
+           END DO
+C
+C GET ERROR FOR TRANSFORMED MESH
+C
+           CALL OPTRIGR(1,IFNCT,MPT,XC,WC,SUMTAB(1,1,1,2))
+           ERRO= 0.0D0
+           DO L= 0,LSYMMAX(IFNCT)
+            L1= L+1
+            MUL= 4*L+2
+            DO ICON= 1,N_CON(L1,IFNCT)
+             DO I= 1,2
+              AA= (SUMTAB(I,ICON,L1,1)-SUMTAB(I,ICON,L1,2))
+     &            *WOVL(ICON,L1)*MUL
+              ERRO= MAX(ERRO,ABS(AA))
+             END DO
+            END DO
+           END DO
+C
+C IF WE HAVE A SUCCESSFUL MESH, STORE IT IN XT, WT
+C EBST CONTAINS ERROR OF BEST MESH SO FAR
+C
+           IF (ERRO .LT. EBST) THEN
+            OK= .TRUE.
+            ITYPE= 2
+            EBST= ERRO
+            DO IPT= 1,MPT
+             XT(IPT)= XC(IPT)
+             WT(IPT)= WC(IPT)
+            END DO
+           END IF
+C 
+C IF THE ERROR FOR THE BEST MESH HAS CHANGED LESS THAN 1 PERCENT
+C DURING THE LAST 5 ITERATIONS, STOP OPTIMIZING ALOPT
+C
+           ERT2= MIN(ERT2,ERRO) 
+           IF (MOD(IMN,5) .EQ. 0) THEN 
+            IF (ERT2 .GT. ERT1*0.99D0) GOTO 300
+            ERT1= ERT2
+           END IF
+  200     CONTINUE
+  300     IF (OK) GOTO 410
+  400    CONTINUE
+  410    CONTINUE
+C
+C STORE MESH POINTS IN RRAD, WRAD (MULTIPLY WEIGHTS BY R**2)
+C
+         IF (NRAD+MPT .GT. NRSIZ) THEN
+          PRINT *,'OPTRMSH: NRSIZ EXCEEDED: ',NRSIZ,NRAD+MPT
+          CALL STOPIT
+         END IF
+         IF (ITYPE .EQ. 1) THEN
+          DO IPT= 1,MPT
+           RRAD(NRAD+IPT)= XT(IPT)
+           WRAD(NRAD+IPT)= WT(IPT)*XT(IPT)**2
+          END DO
+         ELSE
+          IOFS=NRAD+MPT+1
+          DO IPT=1,MPT
+           RRAD(IOFS-IPT)= XT(IPT)
+           WRAD(IOFS-IPT)= WT(IPT)*XT(IPT)**2
+          END DO
+         END IF
+         NRAD=NRAD+MPT
+  500    CONTINUE
+C
+C THE MESH WAS SUCCESSFUL, UPDATE RMIN AND RMAX
+C
+         IF (RMAX .NE. RB) THEN
+          RMIN= RMAX
+          RMAX= RB
+          GOTO 100
+         END IF
+        CONTINUE
+        RETURN
+       END
+C
+C ********************************************************************
+C
+       SUBROUTINE OPTVMSH(IOPT,IMSH,NRSIZ,IFNCT,RST,OVLTAB,ERRMAX,
+     &                    NRAD,RRAD,WRAD,RTRAFO)
+C
+C CREATE OPTIMIZED RADIAL MESH FOR INTEGRATION IN THE INTERVAL (RST,INF)
+C USE RGCMSH TO GET DATA 
+C IOPT: 1: OPTIMIZE NRAD AND RTRAFO
+C       2: LOOK FOR SMALLEST RTRAFO FOR WHICH THE ERROR IS LESS THAN
+C          ERRMAX IF NRAD POINTS ARE USED (START AT INPUT RTRAFO)
+C
+        INCLUDE 'PARAMS'
+        INCLUDE 'commons.inc'
+        PARAMETER (NSEARCH=50)
+        DIMENSION OVLTAB(MAX_CON,LDIM)
+        DIMENSION RRAD(NRSIZ),WRAD(NRSIZ)
+        DIMENSION SUMTAB(2,MAX_CON,LDIM,2),WOVL(MAX_CON,LDIM)
+        DATA TINY /1.0D-10/
+C
+C CHECK INPUT PARAMETERS
+C
+        IF (RST .LT. 0.0D0) THEN
+         PRINT *,'OPTRMSH: RST MUST BE >= 0'
+         CALL STOPIT
+        END IF
+        IF (ERRMAX .LT. TINY) THEN
+         PRINT *,'OPTRMSH: DESIRED ACCURACY IS TOO SMALL: ',ERRMAX
+         PRINT *,'         MUST NOT BE SMALLER THAN: ',TINY
+         CALL STOPIT
+        END IF
+C
+C SETUP OF WOVL 
+C
+        DO L= 0,LSYMMAX(IFNCT)
+         L1= L+1
+         DO ICON= 1,N_CON(L1,IFNCT)
+          WOVL(ICON,L1)= 1.0D0/OVLTAB(ICON,L1)
+         END DO
+        END DO
+C
+C GET TRUE VALUE OF INTEGRALS
+C
+        DO L= 0,LSYMMAX(IFNCT)
+         L1= L+1
+         DO ICON= 1,N_CON(L1,IFNCT)
+          DO I= 1,2
+           SUMTAB(I,ICON,L1,2)= 1.0D30
+          END DO
+         END DO
+        END DO
+C
+        RMID= MAX(1.0D0,5*RST)
+        NTRUE= 0
+  100   CONTINUE
+         NTRUE= NTRUE+10
+         IF (NTRUE .GT. NRSIZ) THEN
+          PRINT *,'OPTVMSH: NRSIZ MUST BE AT LEAST: ',NTRUE
+          CALL STOPIT
+         END IF
+         DO L= 0,LSYMMAX(IFNCT)
+          L1= L+1
+          DO ICON= 1,N_CON(L1,IFNCT)
+           DO I= 1,2
+            SUMTAB(I,ICON,L1,1)= SUMTAB(I,ICON,L1,2)
+           END DO
+          END DO
+         END DO
+         CALL RGCMSH(IMSH,NTRUE,RST,RMID,RRAD,WRAD)
+         CALL OPTRIGR(2,IFNCT,NTRUE,RRAD,WRAD,SUMTAB(1,1,1,2))
+         DO L= 0,LSYMMAX(IFNCT)
+          L1= L+1
+          MUL= 4*L+2
+          DO ICON= 1,N_CON(L1,IFNCT)
+           DO I= 1,2
+            ERRO= (SUMTAB(I,ICON,L1,1)-SUMTAB(I,ICON,L1,2))
+     &            *WOVL(ICON,L1)*MUL
+            IF (ABS(ERRO) .GT. ERRMAX) GOTO 100
+           END DO
+          END DO
+         END DO
+        CONTINUE
+        IF (IOPT .EQ. 2) GOTO 600
+C
+C MESH CREATION (IOPT .EQ. 1)
+C
+        ERRO= 0.0D0
+        ERT1= 1.0D30
+        ERT2= 1.0D30
+        NTRUE= MAX(NTRUE,NRAD)
+        DO 400 IRAD= NRAD,NTRUE
+         DO 200 IMN= 1,NSEARCH
+          CALL MINIMIZE(IMN,1.0D0,RMID,ERRO)
+          CALL RGCMSH(IMSH,IRAD,RST,RST+RMID,RRAD,WRAD)
+          CALL OPTRIGR(2,IFNCT,IRAD,RRAD,WRAD,SUMTAB(1,1,1,1))
+          ERRO= 0.0D0
+          DO L= 0,LSYMMAX(IFNCT)
+           L1= L+1
+           MUL= 4*L+2
+           DO ICON= 1,N_CON(L1,IFNCT)
+            DO I= 1,2
+             DIF= (SUMTAB(I,ICON,L1,1)-SUMTAB(I,ICON,L1,2))
+     &            *WOVL(ICON,L1)*MUL
+             ERRO= MAX(ERRO,ABS(DIF))
+            END DO
+           END DO
+          END DO
+C 
+C IF THE ERROR FOR THE BEST MESH HAS CHANGED LESS THAN 1 PERCENT
+C DURING THE LAST 5 ITERATIONS, STOP OPTIMIZING ALOPT
+C
+          ERT2= MIN(ERT2,ERRO) 
+          IF (MOD(IMN,5) .EQ. 0) THEN 
+           IF (ERT2 .GT. ERT1*0.99D0) GOTO 300
+           ERT1= ERT2
+          END IF
+  200    CONTINUE
+  300    IF (ERRO .LT. ERRMAX) GOTO 500
+  400   CONTINUE
+  500   CONTINUE
+        NRAD= IRAD
+        RTRAFO= RST+RMID
+        RETURN
+C
+C MESH CREATION (IOPT .EQ. 2)
+C
+  600   IF (RTRAFO .LE. RST) THEN
+         PRINT *,'OPTVMSH: RTRAFO MUST BE > RST'
+         CALL STOPIT
+        END IF
+        RMID= RTRAFO-RST
+  610   CONTINUE
+         
+         RMID= RMID*0.95D0
+         CALL RGCMSH(IMSH,NRAD,RST,RST+RMID,RRAD,WRAD)
+         CALL OPTRIGR(2,IFNCT,NRAD,RRAD,WRAD,SUMTAB(1,1,1,1))
+         DO L= 0,LSYMMAX(IFNCT)
+          L1= L+1
+          MUL= 4*L+2
+          DO ICON= 1,N_CON(L1,IFNCT)
+           DO I= 1,2
+            DIF= (SUMTAB(I,ICON,L1,1)-SUMTAB(I,ICON,L1,2))
+     &           *WOVL(ICON,L1)*MUL
+            IF (ABS(DIF) .GT. ERRMAX) GOTO 700
+           END DO
+          END DO
+         END DO
+         GOTO 610
+  700   CONTINUE
+        RTRAFO= RST+RMID/0.95D0
+        CALL RGCMSH(IMSH,NRAD,RST,RTRAFO,RRAD,WRAD)
+        RETURN
+       END
+C
+C ********************************************************************
+C

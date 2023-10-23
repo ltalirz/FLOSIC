@@ -1,0 +1,658 @@
+       SUBROUTINE CALLDECOMP(LNEWWF,INFIL)
+       INCLUDE 'PARAMS'
+       INCLUDE 'commons.inc'         
+       PARAMETER (MAXSPH=500)     
+       CHARACTER*7 INFIL,FNAME
+       CHARACTER*4 OUTFILE(2)
+       CHARACTER*3 PTYP
+       LOGICAL LMKFIL,LNEWWF,EXIST,WINDOW
+       DIMENSION CENTER(6,MAXSPH),RVECA(3,MX_GRP)
+       DIMENSION ISIZE(3),MSITES(1)   
+C
+C RETURN IF INPUT FILE DOES NOT EXIST
+C
+        PRINT '(A)','DECOMPOSING WAVEFUNCTIONS'
+        INQUIRE(FILE=INFIL,EXIST=EXIST)
+        IF (.NOT. EXIST) THEN
+         PRINT '(4A)','DECOMP: FILE ',INFIL,' DOES NOT EXIST ',
+     &                '--> NOTHING TO DO'
+         RETURN
+        END IF
+C
+C CREATE A STANDARD INPUT FILE IF THE CURRENT INPUT FILE IS EMPTY
+C
+        CALL GTTIME(TIME1)
+        LMKFIL=.TRUE.
+        OPEN(74,FILE=INFIL,FORM='FORMATTED',STATUS='OLD')
+        REWIND(74)
+        READ(74,*,END=5,ERR=5) ISWITCH
+        IF (ISWITCH .NE. 0) LMKFIL=.FALSE.
+    5   CLOSE(74)
+C
+        IF (LMKFIL) THEN
+         IF(NIDENT.GT.MAXSPH) THEN
+         PRINT *,'DECOMP: MAXSPH MUST BE AT LEAST: ',NIDENT
+         RETURN
+         ENDIF
+         OPEN(74,FILE=INFIL,FORM='FORMATTED',STATUS='OLD')
+         WRITE(74,*) '0  auto=0, otherwise user-defined'
+         WRITE(74,*) '1.0D-4 0.020 5 2  ERR,ALPMIN,LMAX,NPOW'
+         WRITE(74,*) '0.005  0.001      FWHM,QWRT'
+         WRITE(74,1010) NIDENT
+ 1010    FORMAT(' ',I5,' NUMBER OF CENTERS')
+         DO IATOM=1,NIDENT
+          DO J=1,3
+           CENTER(J,IATOM)=RIDT(J,IATOM)
+          END DO
+          Z=ZNUC(IFUIDT(IATOM))
+          CENTER(6,IATOM)=200*ABS(Z)**3
+         END DO
+         DO IATOM=1,NIDENT
+          CENTER(4,IATOM)=0.0D0
+          CENTER(5,IATOM)=50.0D0
+          DO JATOM=1,NIDENT
+           IF (JATOM.NE.IATOM) THEN
+            CALL GASITES(1,CENTER(1,JATOM),MTOT,RVECA,MSITES)
+            DO KATOM=1,MTOT
+             DD=0.5D0*SQRT((CENTER(1,IATOM)-RVECA(1,KATOM))**2+
+     &                     (CENTER(2,IATOM)-RVECA(2,KATOM))**2+
+     &                     (CENTER(3,IATOM)-RVECA(3,KATOM))**2)
+             IF (DD.LT.CENTER(5,IATOM)) CENTER(5,IATOM)=DD
+            END DO
+           END IF
+          END DO
+          WRITE(74,1020)(CENTER(J,IATOM),J=1,6)
+ 1020     FORMAT(3(1X,F10.5),2(1X,F6.2),1X,E10.2,' -0.6 0.0')
+         END DO
+         WRITE(74,*) 'POSITION,RMIN,RMAX,ALPMAX,ERGMIN,ERGMAX ',
+     &               'FOR EACH CENTER'
+         CLOSE(74)
+        END IF
+                OPEN(74,FILE=INFIL)
+                WINDOW=.TRUE.
+                REWIND(74)
+                READ(74,*)IDUM
+                READ(74,*) DUM
+                READ(74,*) DUM
+                READ(74,*)NCNTX
+                        EMIN= 1.0D30
+                        EMAX=-1.0D30
+                        DO I=1,NCNTX
+                        READ(74,*)(CENTER(J,IATOM),J=1,6),E1,E2
+                           EMIN=MIN(EMIN,E1)
+                           EMAX=MAX(EMIN,E2)
+                        END DO
+                CLOSE(74)
+C
+       IF(NSPN.EQ.1) THEN
+        OUTFILE(1)='DOSO'
+        CALL DECOMP(LNEWWF,INFIL,OUTFILE(1))
+       ELSE
+        IF(E_UP.NE.E_DN) THEN
+         OUTFILE(1)='MAJO' 
+         OUTFILE(2)='MINO' 
+        ELSE
+         OUTFILE(1)='AF1O' 
+         OUTFILE(2)='AF2O' 
+        ENDIF
+        EUP_SAVE=E_UP
+        EDN_SAVE=E_DN
+        E_TOT=E_UP+E_DN
+C        LNEWWF=.TRUE.
+        LNEWWF=.FALSE.
+        E_UP=E_TOT
+        E_DN=0
+        PRINT*,'DEC: ',E_UP,E_DN
+        ITDUM=888
+        TRDUM=0.0D0
+        CALL WFWIND(EMIN,EMAX,.TRUE.,.FALSE.,IFAIL)
+        CALL DECOMP(LNEWWF,INFIL,OUTFILE(1)) 
+             IF(INFIL.EQ.'DOSOCCU')THEN
+             call system('cp DOSOCCU DOSOCCU_1')
+             END IF
+        E_UP=0
+        E_DN=E_TOT
+        TRDUM=0.0D0
+        ITDUM=889
+        CALL WFWIND(EMIN,EMAX,.FALSE.,.TRUE.,IFAIL)
+        CALL DECOMP(LNEWWF,INFIL,OUTFILE(2)) 
+             IF(INFIL.EQ.'DOSOCCU')THEN
+             call system('cp DOSOCCU DOSOCCU_2')
+             END IF
+        E_UP=EUP_SAVE
+        E_DN=EDN_SAVE
+        OPEN(99,FILE='EVAL888',STATUS='UNKNOWN')
+        CLOSE(99,STATUS='DELETE')
+        OPEN(99,FILE='EVAL889',STATUS='UNKNOWN')
+        CLOSE(99,STATUS='DELETE')
+        OPEN(99,FILE='EVALUES',STATUS='UNKNOWN')
+        CLOSE(99,STATUS='DELETE')
+       ENDIF
+C
+C READ THE NUMBER OF SPHERE FOR map.dat
+C
+       OPEN(74,FILE=INFIL,FORM='FORMATTED',STATUS='OLD')
+        REWIND(74)
+        READ(74,*,END=10) ISWITCH
+        READ(74,*,END=10) ERRMAX,AMIN,LMAX,NPOW
+        READ(74,*,END=10) FWHM,QWRT
+        READ(74,*,END=10) NSPHERE
+        GOTO 30
+   10   PRINT *,'DECOMP: INPUT FILE IS INVALID'   
+   30   CONTINUE
+        CLOSE(74)
+        IF (NSPHERE.GT.MAXSPH) THEN
+         RETURN
+        END IF                                         
+C 
+C
+       OPEN(63,FILE='map.dat',STATUS='unknown')
+       DO ISPN=1,NSPN
+        DO IDENT=1,NSPHERE
+        WRITE(FNAME,'(A,I3.3)') OUTFILE(ISPN),IDENT
+        IF(ISPIDT(IDENT).EQ.0) PTYP='UPO'
+        IF(ISPIDT(IDENT).EQ.1) PTYP='SUP'
+        IF(ISPIDT(IDENT).EQ.-1) PTYP='SDN'
+        WRITE(63,88) FNAME,(SYMATM(J,IDENT),J=1,10),PTYP
+        ENDDO
+       ENDDO
+       CLOSE(63)
+   88  FORMAT(A7,4X,10A,4X,A3)
+       RETURN
+       END
+C
+       SUBROUTINE DECOMP(LNEWWF,INFIL,OUTFIL)
+C
+C DECOMP BY MRP MAY 1996 / UPDATED BY DVP NOV 1996
+C * ANGULAR DECOMPOSITION OF WAVEFUNCTIONS WITHIN A SPHERE
+C
+C ATTENTION: IF DECOMP IS CALLED WITH LNEWWF SET TO FALSE, NWF
+C AND NWFS NEED TO BE DEFINED CORRECTLY
+C
+C ANGULAR DECOMPOSITION FOR WAVEFUNCTIONS       
+C
+C
+       INCLUDE 'PARAMS'
+       INCLUDE 'commons.inc'
+       PARAMETER (NMAX=MPBLOCK)
+       PARAMETER (LMXX=10)
+       PARAMETER (LSIZ=(LMXX+1)**2)
+       PARAMETER (MAXANG=((2*LMXX+1)*(LMXX+1)))
+       PARAMETER (MAXSPH=500)
+       PARAMETER (MAXRAD=1000)
+C
+C FOOL THE COMPILER FOR MXSPN=1 TO SUPRESS WARNING MESSAGES
+C THAT ARE REALLY IRRELEVANT
+C
+       CHARACTER*7 INFIL
+       CHARACTER*4 OUTFIL
+       INTEGER FSPN
+       LOGICAL LMKFIL,LNEWWF
+       LOGICAL IUPDAT,ICOUNT,EXIST
+       CHARACTER*20 FNAME
+       COMMON/TMP2/PSIG(NMAX,MAX_OCC)
+C
+C SCRATCH COMMON BLOCK FOR LOCAL ARRAYS
+C
+       COMMON/TMP1/PTS(NSPEED,3),PSIL(MAX_OCC,LSIZ,2)
+     &  ,RANG(3,MAXANG),QL(LMXX+2),QTOT(LMXX+2),DOS(LMXX+2)
+     &  ,QLDS(LMXX+2,MAX_OCC),YLM(MAXANG,LSIZ)
+     &  ,EMN(MAXSPH),EMX(MAXSPH),XRAD(MAXRAD),WTRAD(MAXRAD)
+     &  ,CENTER(6,MAXSPH),ANGLE(3,MAXANG),DOMEGA(MAXANG)
+     &  ,RVECA(3,MX_GRP),GRAD(NSPEED,10,6,MAX_CON,3)
+     &  ,ICOUNT(MAX_CON,3)
+       DIMENSION ISIZE(3),MSITES(1)
+       DATA ISIZE/1,3,6/
+       DATA HA2EV/27.2116D0/
+C READ INPUT FILE
+C CENTER CONTAINS THE COORDINATES (X,Y,Z), THE RADII R1,R2 AND THE
+C MAXIMUM ALPHA FOR EACH CENTER
+C
+        ERGMIN=  1.0D-30
+        ERGMAX= -1.0D-30
+        OPEN(74,FILE=INFIL,FORM='FORMATTED',STATUS='OLD')
+        REWIND(74)
+        READ(74,*,END=10) ISWITCH
+        READ(74,*,END=10) ERRMAX,AMIN,LMAX,NPOW
+        READ(74,*,END=10) FWHM,QWRT
+        READ(74,*,END=10) NSPHERE
+        IF (NSPHERE.GT.MAXSPH) THEN
+         PRINT *,'DECOMP: MAXSPH MUST BE AT LEAST: ',NSPHERE
+         GOTO 20
+        END IF
+        DO I=1,NSPHERE
+         READ(74,*,END=10)(CENTER(J,I),J=1,6),EMN(I),EMX(I)
+         ERGMIN=MIN(ERGMIN,EMN(I))
+         ERGMAX=MAX(ERGMAX,EMX(I))
+        END DO
+        GOTO 30
+   10   PRINT *,'DECOMP: INPUT FILE IS INVALID'
+   20   CLOSE(74) 
+        GOTO 900
+   30   CONTINUE
+C
+C IF DESIRED, CALL WFWIND
+C NWF AND NWFS ARE DEFINED BY WFWIND
+C
+        FSPN=2/NSPN
+        IF (LNEWWF) THEN
+         FSPN=1
+         ERGMIN=ERGMIN-4*FWHM
+         ERGMAX=ERGMAX+4*FWHM
+         CALL WFWIND(ERGMIN,ERGMAX,.TRUE.,.TRUE.,IFAIL)
+         IF (IFAIL .EQ. 1) THEN
+          PRINT *,'DECOMP: WFWIND FAILED, ABORTING LDOS CALCULATION'
+          RETURN
+         END IF
+        END IF
+C
+C LMAX, LMX2 CHECK AND SETUP
+C
+        IF (LMAX.GT.10) THEN
+         LMAX=10
+         PRINT '(A)','DECOMP: WARNING: LMAX HAS BEEN REDUCED TO 10'
+        END IF
+        LMX2=2*LMAX
+C
+C SETUP ANGULAR POINTS AND SPHERICAL HARMONICS
+C FIRST, CHECK IF ENOUGH SPACE IN YLM
+C
+        MPTS=0
+        IF (DEBUG) PRINT *,'MAXANG IN DECOMP: ',MAXANG
+        CALL HARMONICS(MAXANG,MPTS,LMAX,ANGLE,YLM,NPOL)
+        IF (NPOL.GT.LSIZ) THEN
+         PRINT *,'DECOMP: LSIZ MUST BE AT LEAST: ',NPOL
+         CALL STOPIT
+        END IF
+C
+C CALL ANGMSH TO GET ANGULAR POINTS. THEN, SEND THESE POINTS TO
+C HARMONICS AND GET SPHERICAL HARMONICS
+C
+        CALL ANGMSH(MAXANG,LMX2,NANG,ANGLE,DOMEGA)
+        IF (DEBUG) PRINT *,'DECOMP-ANGMSH: LMAX,NANG: ',LMX2,NANG
+        CALL HARMONICS(MAXANG,NANG,LMAX,ANGLE,YLM,NPOL)
+        IF (DEBUG) PRINT *,'DECOMP-HARMON: LMAX,NPOL: ',LMAX,NPOL
+C
+C CHECK ORTHONORMALITY OF YLM'S ...
+C
+        ERR=0.0D0
+        DO L1=1,NPOL 
+         DO L2=L1,NPOL 
+          DOT=0.0D0
+          DO IANG=1,NANG
+           DOT=DOT+YLM(IANG,L1)*YLM(IANG,L2)*DOMEGA(IANG)
+          END DO
+          IF (L1.EQ.L2) THEN
+           ERR=ERR+ABS(1.0D0-DOT)
+          ELSE
+           ERR=ERR+DOT
+          END IF
+         END DO
+         IF (DEBUG) PRINT *,'ORTHOGONALITY TEST: ',L1,ERR
+        END DO
+        ERR=2*ERR/(NPOL*(NPOL+1))
+        IF (DEBUG) PRINT *,'AVERAGE ORTHOGONALITY ERROR: ',ERR 
+C
+C LOOP FOR EACH SPHERE
+C START BY SETTING UP RADIAL POINTS
+C
+        DO 850 ISPHERE=1,NSPHERE
+         CALL GASITES(1,CENTER(1,ISPHERE),MTOT,RVECA,MSITES)
+         RMIN=CENTER(4,ISPHERE)
+         RMAX=CENTER(5,ISPHERE)
+         AMAX=CENTER(6,ISPHERE)
+         AFUDGE=1.2D0
+         CALL RADMSH(MAXRAD,RMIN,RMAX,ERRMAX,AMIN,AMAX,AFUDGE,NPOW,
+     &               NRAD,XRAD,WTRAD)
+         PRINT '(A,I5,A,I5,A,F15.5)','SPHERE ',ISPHERE,
+     &         ': ',NRAD*NANG,' POINTS, RADIUS= ',RMAX
+C
+C INITIALIZE PSIL(IWF,LM,2)
+C RADIAL INTEGRALS ARE STORED IN PSIL(IWF,LM,2)
+C
+         DO LM=1,NPOL
+          DO IWF=1,NWF 
+           PSIL(IWF,LM,2)=0.0D0
+          END DO
+         END DO
+C
+C CALCULATE WAVEFUNCTIONS
+C FOR EACH RADIAL POINT AND EVERY WAVEFUNCTION, 
+C GET ANGULAR AVERAGE AND STORE IT IN PSIL(IWF,LM,1)
+C START BY INITIALIZING PSIL AND SETTING UP THE POINTS
+C
+         DO 500 IR=1,NRAD
+          DO LM=1,NPOL
+           DO IWF=1,NWF
+            PSIL(IWF,LM,1)=0.0D0
+           END DO 
+          END DO
+          DO IANG=1,NANG
+           RANG(1,IANG)=XRAD(IR)*ANGLE(1,IANG)+CENTER(1,ISPHERE)
+           RANG(2,IANG)=XRAD(IR)*ANGLE(2,IANG)+CENTER(2,ISPHERE)
+           RANG(3,IANG)=XRAD(IR)*ANGLE(3,IANG)+CENTER(3,ISPHERE)
+          END DO
+C
+C POINTS LOOP
+C
+         LPTS=0
+   40    CONTINUE
+          MPTS=MIN(NMAX,NANG-LPTS)
+          LPBEG=LPTS
+C
+C INITIALIZE PSIG 
+C
+          DO IWF=1,NWF
+           DO IPTS=1,MPTS
+            PSIG(IPTS,IWF)=0.0D0
+           END DO  
+          END DO  
+          ISHELLA=0
+C
+C FOR ALL CENTER TYPES
+C
+          DO 86 IFNCT=1,NFNCT
+           LMX1=LSYMMAX(IFNCT)+1
+C
+C FOR ALL POSITIONS OF THIS CENTER
+C
+           DO 84 I_POS=1,N_POS(IFNCT)
+            ISHELLA=ISHELLA+1
+C
+C GET SYMMETRY INFO
+C
+            CALL OBINFO(1,RIDT(1,ISHELLA),RVECA,M_NUC,ISHDUMMY)
+C
+C FOR ALL EQUIVALENT POSITIONS OF THIS ATOM
+C
+            DO 82 J_POS=1,M_NUC
+C
+C UNSYMMETRIZE 
+C
+             CALL UNRAVEL(IFNCT,ISHELLA,J_POS,RIDT(1,ISHELLA),
+     &                    RVECA,L_NUC,1)
+             IF(L_NUC.NE.M_NUC)THEN
+              PRINT *,'DECOMP: PROBLEM IN UNRAVEL'
+              CALL STOPIT
+             END IF
+             LPTS=LPBEG
+C
+C FOR ALL MESHPOINTS IN BLOCK DO A SMALLER BLOCK
+C
+             DO 80 JPTS=1,MPTS,NSPEED
+              NPV=MIN(NSPEED,MPTS-JPTS+1)
+C
+C CALCULATE DIFFERENCE VECTOR R-RVECA
+C
+              DO LPV=1,NPV
+               PTS(LPV,1)=RANG(1,LPTS+LPV)-RVECA(1,J_POS)
+               PTS(LPV,2)=RANG(2,LPTS+LPV)-RVECA(2,J_POS)
+               PTS(LPV,3)=RANG(3,LPTS+LPV)-RVECA(3,J_POS)
+              END DO
+C
+C GET ORBITS AND DERIVATIVES
+C
+              CALL GORBDRV(0,IUPDAT,ICOUNT,NPV,PTS,IFNCT,GRAD)
+C
+C UPDATING ARRAY PSIG
+C
+              IF (IUPDAT) THEN
+               IPTS=JPTS-1
+               ILOC=0
+               DO 78 LI=1,LMX1
+                DO MU=1,ISIZE(LI)
+                 DO ICON=1,N_CON(LI,IFNCT)
+                  ILOC=ILOC+1
+                  IF (ICOUNT(ICON,LI)) THEN
+                   DO IWF=1,NWF
+                    FACTOR=PSI(ILOC,IWF,1)
+                    DO LPV=1,NPV
+                     PSIG(IPTS+LPV,IWF)=PSIG(IPTS+LPV,IWF)
+     &               +FACTOR*GRAD(LPV,1,MU,ICON,LI)
+                    END DO
+                   END DO  
+                  END IF
+                 END DO  
+                END DO  
+   78          CONTINUE
+              END IF
+              LPTS=LPTS+NPV
+   80        CONTINUE
+   82       CONTINUE
+   84      CONTINUE
+   86     CONTINUE
+C
+C UPDATE PSIL
+C
+          DO LM=1,NPOL
+           DO IWF=1,NWF
+            DO IPTS=1,MPTS
+             PSIL(IWF,LM,1)=PSIL(IWF,LM,1)+
+     &       PSIG(IPTS,IWF)*DOMEGA(LPBEG+IPTS)*YLM(LPBEG+IPTS,LM)
+            END DO
+           END DO
+          END DO
+C
+C CHECK IF ALL POINTS DONE
+C
+          LPTS=LPBEG+MPTS
+          IF(LPTS.GT.NANG)THEN
+           PRINT *,'DECOMP: ERROR: LPTS > NANG'
+           CALL STOPIT
+          ELSE
+           IF(LPTS.LT.NANG) GOTO 40
+          END IF
+C
+C UPDATE PROJECTIONS
+C
+          RSQRDR=FSPN*WTRAD(IR)
+          DO LM=1,NPOL
+           DO IWF=1,NWF
+            PSIL(IWF,LM,2)=PSIL(IWF,LM,2)+RSQRDR*PSIL(IWF,LM,1)**2
+           END DO
+          END DO
+  500    CONTINUE
+C
+C WRITE DATA TO INPUT FILE
+C USE PSIL(IWF,LM,1) TO STORE L-DECOMPOSITION
+C
+         DO ISPN=1,NSPN
+          WRITE(74,*)
+          WRITE(74,1030) ISPHERE,MTOT,ISPN
+ 1030     FORMAT(' CENTER: ',I5,', NUMBER OF EQUIVALENT SITES: ',I5,
+     &           ', SPIN: ',I2/1X,58('-'))
+          WRITE(74,1040)
+ 1040     FORMAT(13X,'EVAL',4X,'TOTAL',4X,'L=0',5X,'L=1',5X,'L=2',5X,
+     &          'L=3',5X,'L=4',5X,'L=5')
+          DO L=1,LMAX+2
+           QTOT(L)=0.0D0
+          END DO
+          DO IWFS=1,NWFS(ISPN)
+           IWF=IWFS
+           IF (ISPN.EQ.2) IWF=IWF+NWFS(1)
+           QL(LMAX+2)=0.0D0
+           IPOL=0
+           DO L=1,LMAX+1
+            QL(L)=0.0D0
+            DO M=1,2*L-1
+             IPOL=IPOL+1
+             QL(L)=QL(L)+PSIL(IWF,IPOL,2)
+            END DO
+            QTOT(L)     =QTOT(L)     +QL(L)  
+            QTOT(LMAX+2)=QTOT(LMAX+2)+QL(L)
+            QL  (LMAX+2)=QL  (LMAX+2)+QL(L)
+           END DO
+           DO L=1,LMAX+2
+            QLDS(L,IWF)=QL(L)
+           END DO
+           IF (QL(LMAX+2).GT.QWRT) THEN
+            WRITE(74,1050) IWF,EVLOCC(IWF),QL(LMAX+2),
+     &                     (QL(L),L=1,LMAX+1)
+           END IF
+ 1050      FORMAT(1X,I5,1X,F11.4,20F8.3)
+          END DO
+          WRITE(74,1060) QTOT(LMAX+2),(QTOT(L),L=1,LMAX+1)
+ 1060     FORMAT(' TOTAL',12X,20F8.3)
+         END DO
+C
+C CREATE DENSITY OF STATES FILE
+C
+         WRITE(FNAME,'(A,I3.3)') OUTFIL,ISPHERE
+         OPEN(75,FILE=FNAME,FORM='FORMATTED',STATUS='UNKNOWN')
+         REWIND(75)
+         LWRIT=MIN(3,LMAX+1)
+         PI=4*ATAN(1.0D0)
+         EALP=4*LOG(2.0D0)/FWHM**2
+         VFAC=SQRT(EALP/PI)/HA2EV
+         DLE=0.1D0*FWHM
+         ENG=EMN(ISPHERE)-DLE
+ 600     CONTINUE
+          ENG=ENG+DLE
+          DO L=1,LMAX+2
+           DOS(L)=0.0D0
+          END DO
+          DTS=0.0D0
+          DO IWF=1,NWF
+           ENV=EXP(-EALP*(ENG-EVLOCC(IWF))**2)
+           DTS=DTS+ENV
+           DO L=1,LMAX+2
+            DOS(L)=DOS(L)+ENV*QLDS(L,IWF)
+           END DO
+          END DO
+          DO L=1,LMAX+2
+           DOS(L)=VFAC*DOS(L)
+          END DO
+          IF (DTS.GT.QWRT) THEN
+           WRITE(75,1070) ENG*HA2EV,DOS(LMAX+2),(DOS(L),L=1,LWRIT)
+          END IF
+ 1070     FORMAT(1X,24F11.4)
+          IF (ENG.LT.EMX(ISPHERE)) GO TO 600
+         CONTINUE
+C
+C END OF ENERGY LOOP
+C
+         CLOSE(75)
+  850   CONTINUE
+        CLOSE(74)
+  900   CONTINUE
+        CALL GTTIME(TIME2)
+        CALL TIMOUT('WAVEFUNCTION DECOMPOSITION:        ',TIME2-TIME1)
+        RETURN
+       END
+C
+C **********************************************************************
+C
+       SUBROUTINE HARMONICS(MXPTS,NPTS,LM,RXYZ,YLM,NYLM)
+C
+C SPHERICAL HARMONICS GENERATOR BASED ON RECURRENCE FORMULAE
+C WRITTEN BY DIRK POREZAG
+C
+C MXPTS: USED TO DEFINE DIMENSION OF RXYZ, YLM
+C NPTS:  ACTUAL NUMBER OF POINTS
+C LM:    LARGEST ANGULAR MOMENTUM REQUIRED
+C RXYZ:  COORDINATES OF POINTS (normalized)
+C YLM:   SPHERICAL HARMONICS AS CALCULATED ON POINTS
+C NYLM:  TOTAL NUMBER OF SPHERICAL HARMONICS PER POINT
+C 
+C ATTENTION: THIS ROUTINE EXPECTS NORMALIZED POINTS IN ARRAY RXYZ
+C
+        IMPLICIT REAL*8 (A-H,O-Z)
+        DIMENSION RXYZ(3,MXPTS),YLM(MXPTS,(LM+1)**2)
+        DIMENSION PREFACRC(50)
+        LOGICAL FIRST
+        SAVE
+        DATA FIRST/.TRUE./
+
+        IF (LM .GT. 50) THEN
+         PRINT *,'HARMONICS: THIS ROUTINE IS NOT STABLE FOR L > 50'
+         CALL STOPIT
+        END IF
+        NYLM=0
+        IF (LM .LT. 0) RETURN
+        NYLM=(LM+1)**2
+        IF (NPTS .LE. 0) RETURN
+C
+C SET UP 1/I ARRAY
+C
+        IF (FIRST) THEN
+         FIRST= .FALSE.
+         DO I=1,50 
+          PREFACRC(I)= 1.0D0/I
+         END DO
+        END IF
+C
+C L=0
+C
+        DO IPTS=1,NPTS
+         YLM(IPTS,1)= 1.0D0
+        END DO
+        IF (LM .LT. 1) GOTO 200
+C
+C L=1
+C
+        DO IPTS=1,NPTS
+         YLM(IPTS,2)= RXYZ(3,IPTS)
+         YLM(IPTS,3)= RXYZ(1,IPTS)
+         YLM(IPTS,4)= RXYZ(2,IPTS)
+        END DO
+C
+C HIGHER L: START WITH RECURSION FOR Y_LM (M <= L-1)
+C
+        DO 100 L=2,LM
+         IFC2L1=2*L-1
+         NOW=L**2
+         IL1=(L-1)**2
+         IL2=(L-2)**2
+         DO M=0,L-1
+          FACRC=PREFACRC(L-M)
+          IFCLM1=L+M-1
+          IF (M .EQ. L-1) IFCLM1=0 
+          AA= FACRC*IFC2L1
+          BB= FACRC*IFCLM1
+          NRUN=2
+          IF (M .EQ. 0) NRUN=1
+          DO IRUN=1,NRUN
+           NOW=NOW+1
+           IL1=IL1+1
+           IL2=IL2+1
+           DO IPTS=1,NPTS
+            YLM(IPTS,NOW)= AA*YLM(IPTS,IL1)*YLM(IPTS,2)
+     &                    -BB*YLM(IPTS,IL2)
+           END DO
+          END DO
+         END DO
+C
+C RECURSION FOR Y_LL
+C
+         LAST=L**2
+         NOW=(L+1)**2
+         DO IPTS=1,NPTS
+          YLM(IPTS,NOW)=   IFC2L1*(YLM(IPTS,LAST  )*YLM(IPTS,3)
+     &                            +YLM(IPTS,LAST-1)*YLM(IPTS,4))
+          YLM(IPTS,NOW-1)= IFC2L1*(YLM(IPTS,LAST-1)*YLM(IPTS,3)
+     &                            -YLM(IPTS,LAST  )*YLM(IPTS,4))
+         END DO
+  100   CONTINUE
+C
+C PREFACTORS
+C
+  200   FOURPI=16*ATAN(1.0D0)
+        ONOFPI=1.0D0/FOURPI
+        DO L=0,LM
+         FACFC= (2*L+1)*ONOFPI
+         NOW=L**2
+         DO M=0,L
+          NRUN=2
+          IF (M .EQ. 0) NRUN=1
+          VFAC=SQRT(NRUN*FACFC)
+          DO IRUN=1,NRUN
+           NOW=NOW+1
+           DO IPTS=1,NPTS
+            YLM(IPTS,NOW)= VFAC*YLM(IPTS,NOW)
+           END DO
+          END DO
+          FACFC= FACFC/(MAX(L-M,1)*(L+M+1))
+         END DO
+        END DO
+        RETURN
+       END

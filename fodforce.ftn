@@ -1,0 +1,422 @@
+C ----- FRMORB2() ------------
+!> Computes PSIG similarly to DFT DENSOLD.
+!> Construct FMAT
+       SUBROUTINE FRMORB2(LSPN)
+       INCLUDE  'PARAMS'  
+       include 'commons.inc'
+       PARAMETER (NMAX=MPBLOCK)
+       COMMON/FLOINFO/FOD(3,MAX_OCC,MXSPN),NFOD(MXSPN),MFOD(MXSPN)
+!Common for SIC
+       COMMON/SICMAT/SIC(MAX_OCC,MAX_OCC,MXSPN)
+       COMMON/TMP2/PSIG(NMAX,10,MAX_OCC)
+       LOGICAL EXIST
+       LOGICAL LGGA,IUPDAT,ICOUNT,ISMGGA
+        DIMENSION PTS(NSPEED,3),GRAD(NSPEED,10,6,MAX_CON,3)
+     &  ,RVECA(3,MX_GRP),ICOUNT(MAX_CON,3)
+       dimension debdax(3,max_occ,mxspn),lfrm(mxspn)
+       dimension fmat(max_occ,max_occ,4,2),filo(ndh,ndh)
+       DIMENSION WMSA(NMAX),RPTS(3,NMAX)
+       DIMENSION AFRM(3,MAX_OCC),TMP(max_occ,max_occ),
+     &           ver(max_occ,max_occ,4)
+       DIMENSION RHI(4)
+C
+C SCRATCH COMMON BLOCK FOR LOCAL ARRAYS
+C
+       DIMENSION ISIZE(3)
+       dimension nfrm(2)
+       DATA ISIZE/1,3,6/
+
+c      SAVE
+
+        do i=1,max_occ
+         do j=1,3
+          debdax(j,i,LSPN)=0.0d0
+         end do
+        end do
+       
+c  zero PSI
+       PSI = 0.0d0
+c 
+ 107   format(8(f10.4))
+ 108   format(4i3,8(f10.4))
+c
+       lfrm(1) = nfod(1)
+       lfrm(2) = nfod(2)
+       
+       MFRM=0
+       DO ISPN=1,NSPN
+        NFRM(ISPN)=NFOD(ISPN)
+        DO IFRM=1,LFRM(ISPN)
+         MFRM=MFRM+1
+         DO J=1,3
+          AFRM(J,MFRM)=FOD(J,IFRM,ISPN)
+         END DO
+        END DO
+       END DO
+C
+       SMCHG=0.0D0
+       CHGUP=0.0D0
+       CHGDN=0.0D0
+       CALL GTTIME(APT1)
+        DO I=1,NDH
+         DO J=1,NDH
+          OVER(J,I)=0.0D0
+         END DO
+        END DO
+         MGRP=NGRP
+         MMSH=MFRM
+        LGGA= .TRUE.
+        NGRAD=4
+C
+C LOOP OVER ALL POINTS
+C
+        LPTS=0
+ 10     CONTINUE
+        IF(LPTS+NMAX.LT.MMSH)THEN
+         MPTS=NMAX
+        ELSE
+         MPTS=MMSH-LPTS
+        END IF
+C
+C INITIALIZE PSIG AND RHOB
+C
+        FORALL (IWF=1:NWF, IGR=1:NGRAD, IPTS=1:MPTS)
+          PSIG(IPTS,IGR,IWF) = 0.0D0
+        END FORALL
+c       psig = 0.0d0
+        call flush(6)
+         DO IPTS=1,MPTS
+          WMSA(IPTS)=0.0D0
+          DO J=1,3
+           RPTS(J,IPTS)=AFRM(J,IPTS+LPTS)
+          END DO
+         END DO
+C
+C FOR ALL CENTER TYPES
+C
+        ISHELLA=0
+        DO 86 IFNCT=1,NFNCT
+         LMAX1=LSYMMAX(IFNCT)+1
+C
+C FOR ALL POSITIONS OF THIS CENTER
+C
+         DO 84 I_POS=1,N_POS(IFNCT)
+          ISHELLA=ISHELLA+1
+C
+C GET SYMMETRY INFO
+C
+          CALL OBINFO(1,RIDT(1,ISHELLA),RVECA,M_NUC,ISHDUM)
+          IF(NWF.GT.MAX_OCC)THEN
+           WRITE(6+IRANK,*)'APTSLV: MAX_OCC MUST BE AT LEAST:',NWF
+           CALL STOPIT
+          END IF
+C
+C FOR ALL EQUIVALENT POSITIONS OF THIS ATOM
+C
+          DO 82 J_POS=1,M_NUC
+C
+            CALL UNRAVEL(IFNCT,ISHELLA,J_POS,RIDT(1,ISHELLA),
+     &                   RVECA,L_NUC,1)
+           IF(L_NUC.NE.M_NUC)THEN
+            WRITE(6+IRANK,*)'APTSLV: PROBLEM IN UNRAVEL'
+            CALL STOPIT
+           END IF
+C
+C FOR ALL MESHPOINTS IN BLOCK DO A SMALLER BLOCK
+C
+           KPTS=0
+           DO 80 JPTS=1,MPTS,NSPEED
+            NPV=MIN(NSPEED,MPTS-JPTS+1)
+            DO LPV=1,NPV
+             KPTS=KPTS+1
+             PTS(LPV,1)=RPTS(1,KPTS)-RVECA(1,J_POS)
+             PTS(LPV,2)=RPTS(2,KPTS)-RVECA(2,J_POS)
+             PTS(LPV,3)=RPTS(3,KPTS)-RVECA(3,J_POS)
+            END DO
+C
+C GET ORBITS AND DERIVATIVES
+C
+            NDERV=1
+            CALL GORBDRV(NDERV,IUPDAT,ICOUNT,NPV,PTS,IFNCT,GRAD)
+            IF (IUPDAT) THEN
+             IPTS=JPTS-1
+             ILOC=0
+             DO 78 LI=1,LMAX1
+              DO MU=1,ISIZE(LI)
+               DO ICON=1,N_CON(LI,IFNCT)
+                ILOC=ILOC+1
+                IF (ICOUNT(ICON,LI)) THEN
+                 DO IWF=1,NWF
+                  FACTOR=PSI(ILOC,IWF,1)
+                  DO IGR=1,NGRAD
+                   DO LPV=1,NPV
+                    PSIG(IPTS+LPV,IGR,IWF)=PSIG(IPTS+LPV,IGR,IWF)
+     &              +FACTOR*GRAD(LPV,IGR,MU,ICON,LI)
+                   END DO
+                  END DO
+                 END DO
+                END IF
+               END DO
+              END DO
+   78        CONTINUE
+            END IF
+   80      CONTINUE
+   82     CONTINUE
+   84    CONTINUE
+   86   CONTINUE
+C
+C CONSTRUCT FMAT:
+C
+            
+         DO IPTS=1,MPTS
+          JFM=IPTS+LPTS
+                            JSPN=1
+          IF(JFM.GT.NFRM(1))JSPN=2
+          JFM=JFM-(JSPN-1)*NFRM(1)
+          JBEG= (JSPN-1)*NWFS(1)
+          DO K=1,4
+           RHI(K)=0.0D0
+          END DO
+          DO JWF=1,NWFS(JSPN)
+           JLOC=JWF+JBEG
+           DO K=1,4
+            RHI(K)=RHI(K)+PSIG(IPTS,1,JLOC)
+     &                   *PSIG(IPTS,K,JLOC)
+           END DO   !k
+          END DO    !jwf
+          DO K=1,4
+           DO JWF=1,NWFS(JSPN)
+            JLOC=JWF+JBEG
+            FMAT(JWF,JFM,K,JSPN)=PSIG(IPTS,K,JLOC)/SQRT(RHI(1))
+            IF(K.GE.2)THEN
+!> \f$ \frac {d} {dx} \frac {\Psi_i} {\sqrt{\rho}} \f$
+             FMAT(JWF,JFM,K,JSPN)=FMAT(JWF,JFM,K,JSPN)-
+     &       FMAT(JWF,JFM,1,JSPN)*RHI(K)/RHI(1) !NOTE THAT RHI(K)=0.5 (Grad RHO)
+            END IF
+           END DO    !jwf
+          END DO     !k
+         END DO   !ipts = jfm
+ 50     FORMAT(' ',10F12.6)
+c
+C CONSTRUCT OVERLAP MATRIX OF FERMI ORBITAL
+c
+ 100    CONTINUE
+        LPTS=LPTS+MPTS
+        IF (LPTS .LT. MMSH) GOTO 10
+        LGGA=.FALSE.
+        CALL GTTIME(TIME2)
+        WRITE(6+IRANK,*)'TIME in 1000 LOOP:',TIME2-TIME1
+ 1000   CONTINUE
+C CALCULATE THE OVERLAP MATRIX OF THE FERMI ORBITALS
+C       PRINT*,'(Xj,Yj,Zj) is the position of the jth FO'
+C       WRITE(INITOUT,*)'(Xj,Yj,Zj) is the position of the jth FO'
+ 105    format(8(f10.4))
+        DO 1200 ISPN=1,NSPN
+        DO 1200 K=1,4
+C        PRINT*,'ISPN,K:',ISPN,K
+C        IF(K.EQ.1)PRINT*,'<Fj|Fi>:'
+C        IF(K.EQ.2)PRINT*,'<dFj/dXj|Fi>:'
+C        IF(K.EQ.3)PRINT*,'<dFj/dYj|Fi>:'
+C        IF(K.EQ.4)PRINT*,'<dFj/dZj|Fi>:'
+C        IF(K.EQ.1)WRITE(INITOUT,*)'<Fj|Fi>:'
+C        IF(K.EQ.2)WRITE(INITOUT,*)'<dFj/dXj|Fi>:'
+C        IF(K.EQ.3)WRITE(INITOUT,*)'<dFj/dYj|Fi>:'
+C        IF(K.EQ.4)WRITE(INITOUT,*)'<dFj/dZj|Fi>:'
+         DO IFM=1,NFRM(ISPN)
+          DO JFM=1,NFRM(ISPN)
+           OVER(JFM,IFM)=0.0D0
+           DO KWF=1,NWFS(ISPN)
+            OVER(JFM,IFM)=OVER(JFM,IFM)+
+     &      FMAT(KWF,IFM,1,ISPN)*FMAT(KWF,JFM,K,ISPN)
+            !This is <phi|dphi/dam>? 
+!> No, it is \f$ dSnm/dam = \langle F_n | dFm/dam  \rangle \f$ 
+           END DO
+          END DO
+          IF(K.GT.1)THEN
+           DO JFM=1,NFRM(ISPN)
+            OVER(JFM,IFM)=2.0D0*OVER(JFM,IFM)
+           END DO
+          END IF
+         END DO
+         IF(ISPN.EQ.LSPN)THEN
+          DO IF=1,NFRM(ISPN)
+           DO JF=1,NFRM(ISPN)
+            VER(JF,IF,K)=OVER(JF,IF)
+           END DO
+          END DO
+         END IF
+         IF(K.EQ.1)THEN
+          DO I=1,NFRM(ISPN)
+           DO J=1,NFRM(ISPN)
+            HAM(J,I)=0.0D0
+           END DO
+           HAM(I,I)=1.0D0
+          END DO
+          CALL LOWSIC(ISPN,NDH,NFRM(ISPN),OVER,HAM,FILO,EVAL,SC1)
+          INQUIRE(FILE='DETONLY', EXIST=EXIST)
+c
+c  KAJ -- remove check from single spin calculation  ?
+c
+          IF(EXIST.AND.ISPN.EQ.NSPN)CALL STOPIT
+C
+          DET=1.0d0
+          DO I=1,NFRM(ISPN)
+           DET=DET/EVAL(I)**2
+           EVAL(I)=1.0D0/EVAL(I)**2
+           IF(EVAL(I).LT.0.01)THEN
+            WRITE(6+IRANK,*)' BOTHERSOME STATE:'
+            WRITE(6+IRANK,*)(HAM(JF,I),JF=1,NFRM(ISPN))
+C           WRITE(INITOUT,*)' BOTHERSOME STATE:'
+C           WRITE(INITOUT,*)(HAM(JF,I),JF=1,NFRM(ISPN))
+           END IF
+          END DO
+ 777      FORMAT(3G15.6,' =DETERMINANT')
+         ELSE
+C Calculate dQ_i/dAxj:  Derivative terms
+          DO JF=1,NFRM(ISPN)
+           DO KF=1,NFRM(ISPN)
+            DO MF=1,NFRM(ISPN)
+             SC1(MF)=OVER(MF,JF)+OVER(MF,KF) !or transpose?
+            END DO
+            DO IA=1,NFRM(ISPN)
+             DO MF=1,NFRM(ISPN)
+              !YY This is T_aj T_ak
+              TMP(IA,MF)=TMP(IA,MF)+FILO(JF,IA)*FILO(KF,IA)*
+     &                 SC1(MF)
+             END DO
+            END DO
+           END DO
+          END DO
+C         PRINT*,'dQ_i/dA_mx',K
+C         WRITE(INITOUT,*)'dQ_i/dA_mx',K
+C         DO IA=1,MF
+C          PRINT 50, (OVER(IA,MF),MF=1,NFRM(ISPN))
+C          WRITE(INITOUT,50) (OVER(IA,MF),MF=1,NFRM(ISPN))
+C         END DO
+C>  YY I may need this.
+C>  \f$dQ_i/dA_mx\f$
+C>   OVER(IA,MF)
+C>
+         END IF
+ 1200   CONTINUE
+C       PRINT *,'IRANK,LSPN',IRANK,LSPN
+C       IF(LSPN.NE.0.AND.LFM.EQ.NFRM(LSPN))THEN
+C        PRINT*,'SIC MATRIX:',LSPN,LFM
+C        WRITE(INITOUT,*)'SIC MATRIX:',LSPN,LFM
+C Return in cas FORMORB(0,X) is called
+        IF(LSPN.EQ.0) then
+         !Deallocate and return
+         GOTO 2400
+         RETURN
+        ENDIF
+        
+        do ia=1,nfrm(lspn)
+         eval(ia)=1.0d0/eval(ia)**2
+        end do
+        do ia=1,nfrm(lspn)
+         do ib=1,nfrm(lspn)
+          HAM(ib,ia)=0.0d0
+          do kf=1,nfrm(lspn)
+           do lf=1,nfrm(lspn)
+!>  Equation: 
+!>  \f$ ( T_ak T_bl - Tal Tbk ) \f$
+!>  \f$  \langle \phi_l | V_k | \phi_k \rangle \f$
+            HAM(ib,ia)=HAM(ib,ia)+
+     &      (FILO(kf,ia)*FILO(lf,ib)-FILO(lf,ia)*FILO(kf,ib))
+     &      *sic(kf,lf,lspn)
+c    &      *sic(kf,lf,lspn)
+           end do
+          end do
+!>  \f$ \sqrt{Q_a*Q_b} \f$
+          HAM(ib,ia)=HAM(ib,ia)/(sqrt(EVAL(ib))*sqrt(EVAL(ia)))
+         end do
+        end do
+        do ia=1,nfrm(lspn)
+         do nf=1,nfrm(lspn)
+          SC1(nf)=0.0d0
+         end do
+         do ib=1,nfrm(lspn)
+          do nf=1,nfrm(lspn)
+!>  \f$ HAM* T_{b,n}\f$
+           SC1(nf)=HAM(ib,ia)*FILO(nf,ib)+SC1(nf)
+          end do
+         end do
+         do kx=1,3
+          do if=1,nfrm(lspn)
+           do mf=1,nfrm(lspn)
+            OVER(if,mf)=0.0D0
+            do kwf=1,nwfs(lspn)
+!>  \f$ dS_{n,m}/dam  \f$
+             OVER(if,mf)=OVER(if,mf)+
+     &       fmat(kwf,if,1,lspn)*fmat(kwf,mf,kx+1,lspn)
+            end do
+           end do
+          end do
+          do jf=1,nfrm(lspn)
+           OVER(jf,if)=2.0d0*OVER(jf,if)
+          end do
+          do mf=1,nfrm(lspn)
+           do nf=1,nfrm(lspn)
+            debdax(kx,mf,lspn)=debdax(kx,mf,lspn)-FILO(mf,ia)*SC1(nf)*
+     &        OVER(nf,mf) ! this has to be <Fn|dFm/dAmx> <- this is over.
+           end do
+          end do
+         end do
+        end do
+c       write(6+irank,*)'right hand side of equation 51'
+        call flush(6)
+        do ia=1,nfrm(lspn)
+         do ib=1,nfrm(lspn)
+          HAM(ib,ia)=HAM(ib,ia)*(sqrt(EVAL(ib))-sqrt(EVAL(ia)))
+          HAM(ib,ia)=HAM(ib,ia)/(sqrt(EVAL(ib))+sqrt(EVAL(ia)))
+!> \f$ (\sqrt{Qb}-\sqrt{Qa})/(\sqrt{Qb}+\sqrt{Qa})  \f$
+         end do
+        end do
+        do 600 kx=1,3
+c construct OVER (left hand side of equation 51)
+         DO IF=1,NFRM(LSPN)
+          DO MF=1,NFRM(LSPN)
+           OVER(MF,IF)=0.0D0
+           DO KWF=1,NWFS(LSPN)
+            OVER(MF,IF)=OVER(MF,IF)+
+     &      FMAT(KWF,IF,1,LSPN)*FMAT(KWF,MF,KX+1,LSPN)
+           END DO
+          END DO
+C         IF(KX.GT.1)THEN  !KX=1?
+           DO JF=1,NFRM(LSPN)
+            OVER(JF,IF)=2.0D0*OVER(JF,IF)
+           END DO
+C         END IF
+         END DO
+         do ia=1,nfrm(lspn)
+          do ib=1,nfrm(lspn)
+           do mf=1,nfrm(lspn)
+            SC1(mf)=0.0d0
+            do if=1,nfrm(lspn)
+             SC1(mf)=SC1(mf)-
+     &           (FILO(if,ib)*FILO(mf,ia)+FILO(mf,ib)*FILO(if,ia))*
+     &           OVER(mf,if)*0.5d0
+            end do
+           end do
+           do mf=1,nfrm(lspn)
+            debdax(kx,mf,lspn)=debdax(kx,mf,lspn)
+     &                  -0.5d0*SC1(mf)*HAM(ib,ia) !Last change
+           end do
+          end do
+         end do
+ 600    continue
+c  %ifndef GROUP
+        open(40,file='fforce.prt')
+        rewind(40)
+        do if=1,nfrm(lspn)
+         write(40,39)(debdax(ix,if,lspn),ix=1,3)
+        end do
+ 39     format(' ',3F20.12)
+        close(40)
+        call system('cat fforce.prt >>fforce.out')
+c  %endif
+
+2400   CONTINUE
+
+       RETURN
+       END
