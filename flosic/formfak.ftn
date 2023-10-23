@@ -1,0 +1,1657 @@
+       SUBROUTINE FORMFAK
+C ADAPTED FROM COUPOT BY JENS KORTUS 04/2000
+C CALCULATION OF THE FOURIER TRANSFORM OF THE DENSITY
+C
+       INCLUDE 'PARAMS'
+       INCLUDE 'commons.inc'
+C       COMMON/NEWTIMES/TMWRD,TMNRM,CLWRD,CLNRM
+C       COMMON/PTIME/TSETUP,TPOLYS,TFMTTM,TRUNIT,FLDNR,ASYMP,ACHRG
+C     &  ,ATIME,TWASTED,COSTPROJ
+       PARAMETER (MXPR=MXPOISS)
+       PARAMETER (NCOUNT=MXPR)
+       PARAMETER (MXLG=3)
+       COMMON/COUPDATA/
+     &  AIV(3,MXPR*(MX_CNT+2)*MXLG),AJV(3,MXPR*(MX_CNT+2)*MXLG)
+     &  ,DMTV(10,10,2,MXPR*(MX_CNT+2)*MXLG/2)
+     &  ,ALPIV(MXPR*(MX_CNT+2)*MXLG)
+     &  ,ALPJV(MXPR*(MX_CNT+2)*MXLG),CENTER(3,MX_CNT+2)
+     &  ,ADD(MAXUNSYM,MAXUNSYM,2),RVECI(3,MX_GRP),RVECJ(3,MX_GRP)
+     &  ,NPAIRS(MX_CNT+2),IP(MX_CNT+2,MXLG)
+       LOGICAL FIRST_ALPJ,CALLEDJ,NWRD,MWRD,FIRST,EXIST
+       COMMON/TMP2/ RKPT(3,MXKPT),RHOKPT(MXKPT,2,2),NKPT
+C RHOKPT(IKPT,1,ISPN) REALPART
+C RHOKPT(IKPT,2,ISPN) IMAGPART     
+       DIMENSION IBEG(3),IEND(3)
+       DIMENSION AI(3),AJ(3)
+       DIMENSION DMAT(10,10,2),C(3)
+       DIMENSION MUIV(NCOUNT),MUJV(NCOUNT)
+       DATA IBEG,IEND/1,2,5,1,4,10/
+       DATA ZED/1.0D-30/
+       DATA FIRST/.TRUE./
+C
+       IF(NSPN*(MXPR/NSPN).NE.MXPR)THEN
+        PRINT *,'MXPR MUST BE EVEN IN FORMFAK1'
+        CALL STOPIT
+       END IF
+       TMWRD=0.0D0
+       TMNRM=0.0D0
+       INQUIRE(FILE='KMSHDAT',EXIST=EXIST) 
+       IF (.NOT.EXIST) THEN
+         PRINT '(2A)','FORMFAK: FILE KMSHDAT DOES NOT EXIST ',
+     &                '--> NOTHING TO DO'
+         RETURN
+        END IF                                 
+       IF (FIRST) THEN
+        OPEN(74,FILE='KMSHDAT',FORM='FORMATTED',STATUS='OLD')     
+        REWIND(74)
+        READ(74,*,END=10,ERR=10) NKPT
+        IF(NKPT.GT.MXKPT) THEN
+          PRINT '(A,2I5)','FORMFAK: MXKPT TOO SMALL : ',MXKPT,NKPT
+          GOTO 20
+        ENDIF
+        DO IKPT=1,NKPT
+         READ(74,*,ERR=10,END=10)(RKPT(J,IKPT),J=1,3)
+        ENDDO
+        CLOSE(74)
+        GOTO 30
+   10   PRINT *,'FORMFAK: INPUT FILE IS INVALID'
+   20   CLOSE(74)
+        RETURN
+   30   CONTINUE
+       ENDIF
+C                                                
+%ifdef MPI
+       CALL SENDDATA(107)
+%else
+C
+       DO ISPN=1,NSPN
+        DO IKPT=1,NKPT
+         RHOKPT(IKPT,1,ISPN)=0.0D0
+         RHOKPT(IKPT,2,ISPN)=0.0D0
+        ENDDO
+       ENDDO
+%endif
+C
+       IF (DEBUG) THEN
+        PRINT *, 'GAUSS_CUT IN FORMFAK'
+        PRINT 9000,(GAUSS_CUT(IX),IX=1,MAX_IDENT)
+ 9000   FORMAT(4(1X,G15.8))
+       END IF
+C
+C SETUP ATOMIC LOCATIONS AND BASIS SET INFORMATION
+C
+       CALL GTTIME(TIME1)
+       ICOUNT=0
+       LC_LNG=0
+       LC_SHT=0
+       TSETUP=0.0D0
+       TPOLYS=0.0D0
+       TFMTTM=0.0D0
+       TRUNIT=0.0D0
+       FLDNR=0.0D0
+       ASYMP=0.0D0
+       ACHRG=0.0D0
+       ATIME=0.0D0
+       TWASTED=0.0D0
+       TIMEP=0.0D0
+       COSTPROJ=0.0D0
+       NCALL=0
+       MCALL=0
+       MCNT=0
+       ISHELLA=0
+       DMIN=1.0D30
+       DO IFNCT=1,NFNCT
+        DO I_POS=1,N_POS(IFNCT)
+         ISHELLA=ISHELLA+1
+         CALL GASITES(1,RIDT(1,ISHELLA),MTOT,RVECI,MSITES)
+         DO ITOT=1,MTOT
+          MCNT=MCNT+1
+          CENTER(1,MCNT)=RVECI(1,ITOT)
+          CENTER(2,MCNT)=RVECI(2,ITOT)
+          CENTER(3,MCNT)=RVECI(3,ITOT)
+          DIST=CENTER(1,MCNT)**2+CENTER(2,MCNT)**2+CENTER(3,MCNT)**2
+          IF(DIST.LT.DMIN)DMIN=DIST
+          NPAIRS(MCNT)=0
+          IF (DEBUG) THEN
+           PRINT 990,MCNT,(CENTER(J,MCNT),J=1,3)
+  990      FORMAT(' PCENT:',I5,3G15.6)
+          END IF
+         END DO
+        END DO
+       END DO
+C
+       IF(SQRT(DMIN) .GT. 0.7D0)THEN
+        MCNT=MCNT+1 
+        CENTER(1,MCNT)=0.0D0
+        CENTER(2,MCNT)=0.0D0
+        CENTER(3,MCNT)=0.0D0
+        NPAIRS(MCNT)=0
+        IF (DEBUG) PRINT 990,MCNT,(CENTER(J,MCNT),J=1,3)
+       END IF
+       IF((MCNT-1).GT.MX_CNT)THEN
+        PRINT*,'FORMFAK: MX_CNT MUST BE AT LEAST:',MCNT-1
+        CALL STOPIT
+       END IF
+C
+       DO LNG=1,MXLG
+        DO ICNTR=1,MCNT+1
+         IP(ICNTR,LNG)=0
+        END DO
+       END DO
+       ISITE=0
+       ISHELLA=0
+       DO 120 IFNCT=1,NFNCT
+       DO 120 I_POS=1,N_POS(IFNCT)
+        JSITE_BEG=ISITE
+        ISHELLA=ISHELLA+1
+        CALL OBINFO(1,RIDT(1,ISHELLA),RVECI,IST,ISHDUM)
+C
+C  TRANSLATE SHELLS TO ATOMS; GET GAUSS CUTOFF FOR ATOM I
+C
+        IATOM=ISHELLA
+        GAUSS_CUTI=GAUSS_CUT(IATOM)
+        DO 118 K_SITEI=1,IST
+         ISITE=ISITE+1
+         CALL UNRAVEL(IFNCT,ISHELLA,K_SITEI,RIDT(1,ISHELLA),
+     &                RVECI,LST,1)
+         IF(LST.NE.IST)THEN
+          PRINT *,'FORMFAK: PROBLEM IN UNRAVEL'
+          CALL STOPIT
+         END IF
+         I_LOC_BEG=0
+         AI(1)=RVECI(1,K_SITEI)
+         AI(2)=RVECI(2,K_SITEI)
+         AI(3)=RVECI(3,K_SITEI)
+         JSITE=JSITE_BEG
+         JSHELLA=0
+         DO 116 JFNCT=1,NFNCT
+         DO 116 J_POS=1,N_POS(JFNCT)
+          JSHELLA=JSHELLA+1
+          IF(JSHELLA.LT.ISHELLA) GO TO 116
+          CALL OBINFO(1,RIDT(1,JSHELLA),RVECJ,JST,JSHDUM)
+C
+C  TRANSLATE SHELLS TO ATOMS;  GET GAUSS CUT OFF  FOR ATOM J
+C
+          JATOM=JSHELLA
+          GAUSS_CUTJ=GAUSS_CUT(JATOM)
+          JJCALL=0 
+          DO 114 K_SITEJ=1,JST
+           CALLEDJ=.FALSE.
+           JSITE=JSITE+1
+           FIRST_ALPJ=.TRUE.
+           IF(JSITE.LT.ISITE) GO TO 114
+           J_LOC_BEG=0
+           IF(JSITE.EQ.ISITE)J_LOC_BEG=I_LOC_BEG
+           TIMES_SITES=1.0D0
+           IF(JSITE.GT.ISITE)TIMES_SITES=2.0D0
+           AJ(1)=RVECJ(1,K_SITEJ)
+           AJ(2)=RVECJ(2,K_SITEJ)
+           AJ(3)=RVECJ(3,K_SITEJ)
+           DO 110 IALP=1,N_BARE(IFNCT)
+            ALPHAI=BFALP(IALP,IFNCT)
+            JALP_BEG=1
+            IF(ISITE.EQ.JSITE)JALP_BEG=IALP
+            DO 105 JALP=JALP_BEG,N_BARE(JFNCT)
+             TIMES_ALPHA=1.0D0
+             IF(ISITE.EQ.JSITE.AND.JALP.GT.IALP)TIMES_ALPHA=2.0D0
+             ALPHAJ=BFALP(JALP,JFNCT)
+             RCALP=1.0D0/(ALPHAI+ALPHAJ)
+             ARG=ALPHAI*ALPHAJ*RCALP
+     &        *((AI(1)-AJ(1))**2+(AI(2)-AJ(2))**2+(AI(3)-AJ(3))**2)
+             IF(ARG .GT.CUTEXP) GO TO 105
+             LC_SHT=LC_SHT+1
+             IF(ALPHAI.GT.GAUSS_CUTI.OR.ALPHAJ.GT.GAUSS_CUTJ)
+     &         GO TO 105
+             C(1)=(ALPHAI*AI(1)+ALPHAJ*AJ(1))*RCALP
+             C(2)=(ALPHAI*AI(2)+ALPHAJ*AJ(2))*RCALP
+             C(3)=(ALPHAI*AI(3)+ALPHAJ*AJ(3))*RCALP
+             DMIN=1.0D30
+             DO ICNT=1,MCNT
+              DIST=SQRT((C(1)-CENTER(1,ICNT))**2+
+     &                  (C(2)-CENTER(2,ICNT))**2+
+     &                  (C(3)-CENTER(3,ICNT))**2)
+              IF(DIST.LT.DMIN)THEN
+               DMIN=DIST
+               MINC=ICNT
+              END IF
+             END DO
+C
+C BLOCK 1:
+C
+             RLEN=(ALPHAI+ALPHAJ)*DMIN**2
+             IF(RLEN .GT. 0.5D0)MINC=MCNT+1
+             IF(ALPHAI+ALPHAJ .LT. 3.0D0)MINC=MCNT+1
+             LNG=1
+             IF(ALPHAI+ALPHAJ.GT. 10.0D0)LNG=2
+             IF(ALPHAI+ALPHAJ.GT. 40.0D0)LNG=3
+C
+C END OF BLOCK 2:
+C
+             IF(.NOT.CALLEDJ)THEN
+              JJCALL=JJCALL+1
+              IF(JJCALL.EQ.1.AND.K_SITEJ.NE.1)THEN
+               CALL UNRAVEL(JFNCT,JSHELLA,1,RIDT(1,JSHELLA),
+     &                      RVECJ,MST,2)
+               IF(MST.NE.JST)THEN
+                PRINT *,'FORMFAK: PROBLEM IN UNRAVEL'
+                CALL STOPIT
+               END IF
+              END IF
+              CALL UNRAVEL(JFNCT,JSHELLA,K_SITEJ,RIDT(1,JSHELLA),
+     &                     RVECJ,MST,2)
+              IF(MST.NE.JST)THEN
+               PRINT *,'FORMFAK: PROBLEM IN UNRAVEL'
+               CALL STOPIT
+              END IF
+              CALLEDJ=.TRUE.
+             END IF
+C
+C END OF NEW SETUP...
+C
+C
+C CALCULATE DENSITY MATRIX:
+C
+             DO ISPN=1,NSPN
+              DO MUI=1,10
+               DO MUJ=1,10
+                DMAT(MUJ,MUI,ISPN)=0.0D0
+               END DO
+              END DO
+             END DO
+             MUIMAX=0
+             DO LI =0,LSYMMAX(IFNCT)
+              DO MUI=IBEG(LI+1),IEND(LI+1)
+               DO IBASE=1,N_CON(LI+1,IFNCT)
+                IF(ABS(BFCON(IALP,IBASE,LI+1,IFNCT)).GT.ZED
+     &            .AND.MUI.GT.MUIMAX) MUIMAX=MUI
+               END DO
+              END DO
+             END DO
+             MUJMAX=0
+             DO LJ =0,LSYMMAX(JFNCT)
+              DO MUJ=IBEG(LJ+1),IEND(LJ+1)
+               DO JBASE=1,N_CON(LJ+1,JFNCT)
+                IF(ABS(BFCON(JALP,JBASE,LJ+1,JFNCT)).GT.ZED
+     &            .AND.MUJ.GT.MUJMAX) MUJMAX=MUJ
+               END DO
+              END DO
+             END DO
+C
+             IF(FIRST_ALPJ)THEN
+              I_LOC    =I_LOC_BEG
+              DO LI =0,LSYMMAX(IFNCT)
+               DO MUI=IBEG(LI+1),IEND(LI+1)
+                DO IBASE=1,N_CON(LI+1,IFNCT)
+                 I_LOC=I_LOC+1
+                 J_LOC=J_LOC_BEG
+                 DO LJ =0,LSYMMAX(JFNCT)
+                  DO MUJ=IBEG(LJ+1),IEND(LJ+1)
+                   DO JBASE=1,N_CON(LJ+1,JFNCT)
+                    J_LOC=J_LOC+1
+                    IWF=0
+                    DO ISPN=1,NSPN
+                     ADD(I_LOC,J_LOC,ISPN)=0.0D0
+                     DO IWFS=1,NWFS(ISPN)
+                      IWF=IWF+1
+                       ADD(I_LOC,J_LOC,ISPN)=ADD(I_LOC,J_LOC,ISPN)
+     &                +PSI(I_LOC,IWF,1)*PSI(J_LOC,IWF,2)
+                     END DO
+                    END DO
+                   END DO
+                  END DO
+                 END DO
+                END DO
+               END DO
+              END DO
+              FIRST_ALPJ=.FALSE.
+              IF(I_LOC.GT.MAXUNSYM)THEN
+               PRINT*,'FORMFAK: MAXUNSYM MUST BE AT LEAST:',I_LOC
+               CALL STOPIT
+              END IF
+              IF(J_LOC.GT.MAXUNSYM)THEN
+               PRINT*,'FORMFAK: MAXUNSYM MUST BE AT LEAST:',J_LOC
+               CALL STOPIT
+              END IF
+             END IF
+             I_LOC    =I_LOC_BEG
+             DO LI =0,LSYMMAX(IFNCT)
+              DO MUI=IBEG(LI+1),IEND(LI+1)
+               DO IBASE=1,N_CON(LI+1,IFNCT)
+                I_LOC=I_LOC+1
+                J_LOC=J_LOC_BEG
+                DO LJ =0,LSYMMAX(JFNCT)
+                 DO MUJ=IBEG(LJ+1),IEND(LJ+1)
+                  DO JBASE=1,N_CON(LJ+1,JFNCT)
+                   J_LOC=J_LOC+1
+                   PROD=BFCON(IALP,IBASE,LI+1,IFNCT)
+     &                 *BFCON(JALP,JBASE,LJ+1,JFNCT)
+                   DO ISPN=1,NSPN
+                    DMAT(MUI,MUJ,ISPN)=DMAT(MUI,MUJ,ISPN)
+     &                                +PROD*ADD(I_LOC,J_LOC,ISPN)
+                   END DO
+                  END DO
+                 END DO
+                END DO
+               END DO
+              END DO
+             END DO
+C
+C JK04/2000
+
+           ICOUNT=ICOUNT+1 
+            TTSALP=TIMES_SITES*TIMES_ALPHA
+             DO ISPN=1,NSPN
+              DO MUJ=1,MUJMAX
+               DO MUI=1,MUIMAX
+                DMTV(MUI,MUJ,ISPN,ICOUNT)=DMAT(MUI,MUJ,ISPN)*TTSALP
+               END DO
+              END DO                                               
+             END DO                                               
+            MUIV(ICOUNT)=MUIMAX
+            MUJV(ICOUNT)=MUJMAX
+            ALPIV(ICOUNT)=ALPHAI
+            ALPJV(ICOUNT)=ALPHAJ
+            DO J=1,3
+             AIV(J,ICOUNT)=AI(J)
+             AJV(J,ICOUNT)=AJ(J)
+            ENDDO
+CJK1
+            IF(ICOUNT.EQ.NCOUNT) THEN
+%ifndef MPI
+              CALL RHOFFTPAR(ALPIV,ALPJV,AIV,AJV,DMTV,MUIV,MUJV
+     &                       ,ICOUNT)
+              ICOUNT=0
+%else
+c for the moment the master is doing nothing
+              IF (NCALLED.LT.NPROC) THEN
+               CALL PAMFORM(1,MUIV,MUJV,ICOUNT)
+              ELSE
+C               CALL CKCHILD(2,NTID)
+C               CALL PAMFORM(1,MUIV,MUJV,ICOUNT) 
+         CALL RHOFFTPAR(ALPIV,ALPJV,AIV,AJV,DMTV,MUIV,MUJV,ICOUNT)      
+              ENDIF
+%endif             
+            ENDIF 
+            
+C
+  105       CONTINUE
+  110      CONTINUE
+  114     CONTINUE
+  116    CONTINUE
+  118   CONTINUE
+  120  CONTINUE
+       IF(ICOUNT.NE.0) THEN
+         CALL RHOFFTPAR(ALPIV,ALPJV,AIV,AJV,DMTV,MUIV,MUJV,ICOUNT)      
+       ENDIF 
+%ifdef MPI
+       IF(DEBUG) PRINT*,'Call PAMFORM2 : ',NCALLED, NPROC
+       CALL PAMFORM(2,MUIV,MUJV,ICOUNT)
+%endif
+       OPEN(74,FILE='RHOFFTOUT',FORM='FORMATTED',STATUS='UNKNOWN')
+       WRITE(74,*) NKPT
+       DO IKPT=1,NKPT
+        WRITE(74,*) (RHOKPT(IKPT,1,J),RHOKPT(IKPT,2,J),J=1,NSPN)
+       ENDDO 
+       CLOSE(74)
+       CALL GTTIME(TP2)
+       CALL TIMOUT('FOURIER TRANSFORM OF DENSITY:      ',TP2-TIME1)
+       RETURN   
+       END
+C
+C
+CJK2
+       SUBROUTINE RHOFFTPAR(ALPIV,ALPJV,AIV,AJV,DMTV,MUIV,MUJV,NCNTP)
+       INCLUDE 'PARAMS'       
+       INCLUDE 'commons.inc'       
+       DIMENSION ALPIV(NCNTP),ALPJV(NCNTP)
+       DIMENSION MUIV (NCNTP),MUJV (NCNTP)
+       DIMENSION AIV(3,NCNTP),AJV(3,NCNTP)
+       DIMENSION DMTV(10,10,2,NCNTP),SS(10,10,2)
+       COMMON/TMP2/ RKPT(3,MXKPT),RHOKPT(MXKPT,2,2),NKPT          
+       LOGICAL FIRST
+       DATA FIRST/.TRUE./
+       PRINT*,'RFFT : ', NCNT,NKPT,irank
+       DO ICNT=1,NCNT
+        IF(DEBUG) THEN
+        PRINT*,ALPIV(ICNT),ALPJV(ICNT)
+        print*,(AIV(j,ICNT),j=1,3),'  AI'
+        print*,(AjV(j,ICNT),j=1,3),'  Aj'
+        print*,MUIV (ICNT),MUJV (ICNT),'MU'
+        ENDIF
+        DO IKPT=1,NKPT
+        CALL RHOFFT(ALPIV(ICNT),ALPJV(ICNT),AIV(1,ICNT),AJV(1,ICNT),
+     &            SS,RKPT(1,IKPT)) 
+        DO ISPN=1,NSPN
+         ADDON1=0.0D0
+         ADDON2=0.0D0
+         DO MUJ=1,MUJV(ICNT)
+          DO MUI=1,MUIV(ICNT)
+           ADDON1=ADDON1+DMTV(MUI,MUJ,ISPN,ICNT)*SS(MUI,MUJ,1)
+           ADDON2=ADDON2+DMTV(MUI,MUJ,ISPN,ICNT)*SS(MUI,MUJ,2)
+          END DO
+         END DO
+         RHOKPT(IKPT,1,ISPN)=RHOKPT(IKPT,1,ISPN)+ADDON1
+         RHOKPT(IKPT,2,ISPN)=RHOKPT(IKPT,2,ISPN)+ADDON2
+         END DO                 !ISPN
+        END DO                  !IKPT   
+       END DO                   !ICNT
+       RETURN
+       END
+C
+C
+C
+        SUBROUTINE RHOFFT(ALP,BET,A,B,SS,RK)
+        IMPLICIT REAL*8 (A-H,O-Z)
+        PARAMETER (NDMN=4)
+        DIMENSION SS(10,10,2)
+        DIMENSION C(0:NDMN,0:NDMN,3),S(0:NDMN,0:NDMN,3)
+        DIMENSION A(3),B(3),RK(3)
+C CALCULATE INTEGRAND= EXP(-ALP*|R-A|^2)*EXP(-BET*|R-B|^2)*
+C                      EXP(IK.R)*PI(R-A)*PJ(R-B)
+C  SS(I,J,1) = REAL PART
+C  SS(I,J,2) = IMAGINERY PART
+         DO IX=1,3
+         CALL IXNMAB(RK(IX),ALP,BET,A(IX),B(IX),2,2,C(0,0,IX),S(0,0,IX))
+         END DO
+       SS( 1, 1,1)=
+     &C( 0, 0,1)*C( 0, 0,2)*C( 0, 0,3)-
+     &S( 0, 0,1)*S( 0, 0,2)*C( 0, 0,3)-
+     &C( 0, 0,1)*S( 0, 0,2)*S( 0, 0,3)-
+     &S( 0, 0,1)*C( 0, 0,2)*S( 0, 0,3) 
+       SS( 1, 1,2)=
+     &C( 0, 0,1)*C( 0, 0,2)*S( 0, 0,3)+
+     &C( 0, 0,1)*S( 0, 0,2)*C( 0, 0,3)+
+     &S( 0, 0,1)*C( 0, 0,2)*C( 0, 0,3)-
+     &S( 0, 0,1)*S( 0, 0,2)*S( 0, 0,3) 
+       SS( 1, 2,1)=
+     &C( 0, 1,1)*C( 0, 0,2)*C( 0, 0,3)-
+     &S( 0, 1,1)*S( 0, 0,2)*C( 0, 0,3)-
+     &C( 0, 1,1)*S( 0, 0,2)*S( 0, 0,3)-
+     &S( 0, 1,1)*C( 0, 0,2)*S( 0, 0,3) 
+       SS( 1, 2,2)=
+     &C( 0, 1,1)*C( 0, 0,2)*S( 0, 0,3)+
+     &C( 0, 1,1)*S( 0, 0,2)*C( 0, 0,3)+
+     &S( 0, 1,1)*C( 0, 0,2)*C( 0, 0,3)-
+     &S( 0, 1,1)*S( 0, 0,2)*S( 0, 0,3) 
+       SS( 1, 3,1)=
+     &C( 0, 0,1)*C( 0, 1,2)*C( 0, 0,3)-
+     &S( 0, 0,1)*S( 0, 1,2)*C( 0, 0,3)-
+     &C( 0, 0,1)*S( 0, 1,2)*S( 0, 0,3)-
+     &S( 0, 0,1)*C( 0, 1,2)*S( 0, 0,3) 
+       SS( 1, 3,2)=
+     &C( 0, 0,1)*C( 0, 1,2)*S( 0, 0,3)+
+     &C( 0, 0,1)*S( 0, 1,2)*C( 0, 0,3)+
+     &S( 0, 0,1)*C( 0, 1,2)*C( 0, 0,3)-
+     &S( 0, 0,1)*S( 0, 1,2)*S( 0, 0,3) 
+       SS( 1, 4,1)=
+     &C( 0, 0,1)*C( 0, 0,2)*C( 0, 1,3)-
+     &S( 0, 0,1)*S( 0, 0,2)*C( 0, 1,3)-
+     &C( 0, 0,1)*S( 0, 0,2)*S( 0, 1,3)-
+     &S( 0, 0,1)*C( 0, 0,2)*S( 0, 1,3) 
+       SS( 1, 4,2)=
+     &C( 0, 0,1)*C( 0, 0,2)*S( 0, 1,3)+
+     &C( 0, 0,1)*S( 0, 0,2)*C( 0, 1,3)+
+     &S( 0, 0,1)*C( 0, 0,2)*C( 0, 1,3)-
+     &S( 0, 0,1)*S( 0, 0,2)*S( 0, 1,3) 
+       SS( 1, 5,1)=
+     &C( 0, 2,1)*C( 0, 0,2)*C( 0, 0,3)-
+     &S( 0, 2,1)*S( 0, 0,2)*C( 0, 0,3)-
+     &C( 0, 2,1)*S( 0, 0,2)*S( 0, 0,3)-
+     &S( 0, 2,1)*C( 0, 0,2)*S( 0, 0,3) 
+       SS( 1, 5,2)=
+     &C( 0, 2,1)*C( 0, 0,2)*S( 0, 0,3)+
+     &C( 0, 2,1)*S( 0, 0,2)*C( 0, 0,3)+
+     &S( 0, 2,1)*C( 0, 0,2)*C( 0, 0,3)-
+     &S( 0, 2,1)*S( 0, 0,2)*S( 0, 0,3) 
+       SS( 1, 6,1)=
+     &C( 0, 0,1)*C( 0, 2,2)*C( 0, 0,3)-
+     &S( 0, 0,1)*S( 0, 2,2)*C( 0, 0,3)-
+     &C( 0, 0,1)*S( 0, 2,2)*S( 0, 0,3)-
+     &S( 0, 0,1)*C( 0, 2,2)*S( 0, 0,3) 
+       SS( 1, 6,2)=
+     &C( 0, 0,1)*C( 0, 2,2)*S( 0, 0,3)+
+     &C( 0, 0,1)*S( 0, 2,2)*C( 0, 0,3)+
+     &S( 0, 0,1)*C( 0, 2,2)*C( 0, 0,3)-
+     &S( 0, 0,1)*S( 0, 2,2)*S( 0, 0,3) 
+       SS( 1, 7,1)=
+     &C( 0, 0,1)*C( 0, 0,2)*C( 0, 2,3)-
+     &S( 0, 0,1)*S( 0, 0,2)*C( 0, 2,3)-
+     &C( 0, 0,1)*S( 0, 0,2)*S( 0, 2,3)-
+     &S( 0, 0,1)*C( 0, 0,2)*S( 0, 2,3) 
+       SS( 1, 7,2)=
+     &C( 0, 0,1)*C( 0, 0,2)*S( 0, 2,3)+
+     &C( 0, 0,1)*S( 0, 0,2)*C( 0, 2,3)+
+     &S( 0, 0,1)*C( 0, 0,2)*C( 0, 2,3)-
+     &S( 0, 0,1)*S( 0, 0,2)*S( 0, 2,3) 
+       SS( 1, 8,1)=
+     &C( 0, 1,1)*C( 0, 1,2)*C( 0, 0,3)-
+     &S( 0, 1,1)*S( 0, 1,2)*C( 0, 0,3)-
+     &C( 0, 1,1)*S( 0, 1,2)*S( 0, 0,3)-
+     &S( 0, 1,1)*C( 0, 1,2)*S( 0, 0,3) 
+       SS( 1, 8,2)=
+     &C( 0, 1,1)*C( 0, 1,2)*S( 0, 0,3)+
+     &C( 0, 1,1)*S( 0, 1,2)*C( 0, 0,3)+
+     &S( 0, 1,1)*C( 0, 1,2)*C( 0, 0,3)-
+     &S( 0, 1,1)*S( 0, 1,2)*S( 0, 0,3) 
+       SS( 1, 9,1)=
+     &C( 0, 1,1)*C( 0, 0,2)*C( 0, 1,3)-
+     &S( 0, 1,1)*S( 0, 0,2)*C( 0, 1,3)-
+     &C( 0, 1,1)*S( 0, 0,2)*S( 0, 1,3)-
+     &S( 0, 1,1)*C( 0, 0,2)*S( 0, 1,3) 
+       SS( 1, 9,2)=
+     &C( 0, 1,1)*C( 0, 0,2)*S( 0, 1,3)+
+     &C( 0, 1,1)*S( 0, 0,2)*C( 0, 1,3)+
+     &S( 0, 1,1)*C( 0, 0,2)*C( 0, 1,3)-
+     &S( 0, 1,1)*S( 0, 0,2)*S( 0, 1,3) 
+       SS( 1,10,1)=
+     &C( 0, 0,1)*C( 0, 1,2)*C( 0, 1,3)-
+     &S( 0, 0,1)*S( 0, 1,2)*C( 0, 1,3)-
+     &C( 0, 0,1)*S( 0, 1,2)*S( 0, 1,3)-
+     &S( 0, 0,1)*C( 0, 1,2)*S( 0, 1,3) 
+       SS( 1,10,2)=
+     &C( 0, 0,1)*C( 0, 1,2)*S( 0, 1,3)+
+     &C( 0, 0,1)*S( 0, 1,2)*C( 0, 1,3)+
+     &S( 0, 0,1)*C( 0, 1,2)*C( 0, 1,3)-
+     &S( 0, 0,1)*S( 0, 1,2)*S( 0, 1,3) 
+       SS( 2, 1,1)=
+     &C( 1, 0,1)*C( 0, 0,2)*C( 0, 0,3)-
+     &S( 1, 0,1)*S( 0, 0,2)*C( 0, 0,3)-
+     &C( 1, 0,1)*S( 0, 0,2)*S( 0, 0,3)-
+     &S( 1, 0,1)*C( 0, 0,2)*S( 0, 0,3) 
+       SS( 2, 1,2)=
+     &C( 1, 0,1)*C( 0, 0,2)*S( 0, 0,3)+
+     &C( 1, 0,1)*S( 0, 0,2)*C( 0, 0,3)+
+     &S( 1, 0,1)*C( 0, 0,2)*C( 0, 0,3)-
+     &S( 1, 0,1)*S( 0, 0,2)*S( 0, 0,3) 
+       SS( 2, 2,1)=
+     &C( 1, 1,1)*C( 0, 0,2)*C( 0, 0,3)-
+     &S( 1, 1,1)*S( 0, 0,2)*C( 0, 0,3)-
+     &C( 1, 1,1)*S( 0, 0,2)*S( 0, 0,3)-
+     &S( 1, 1,1)*C( 0, 0,2)*S( 0, 0,3) 
+       SS( 2, 2,2)=
+     &C( 1, 1,1)*C( 0, 0,2)*S( 0, 0,3)+
+     &C( 1, 1,1)*S( 0, 0,2)*C( 0, 0,3)+
+     &S( 1, 1,1)*C( 0, 0,2)*C( 0, 0,3)-
+     &S( 1, 1,1)*S( 0, 0,2)*S( 0, 0,3) 
+       SS( 2, 3,1)=
+     &C( 1, 0,1)*C( 0, 1,2)*C( 0, 0,3)-
+     &S( 1, 0,1)*S( 0, 1,2)*C( 0, 0,3)-
+     &C( 1, 0,1)*S( 0, 1,2)*S( 0, 0,3)-
+     &S( 1, 0,1)*C( 0, 1,2)*S( 0, 0,3) 
+       SS( 2, 3,2)=
+     &C( 1, 0,1)*C( 0, 1,2)*S( 0, 0,3)+
+     &C( 1, 0,1)*S( 0, 1,2)*C( 0, 0,3)+
+     &S( 1, 0,1)*C( 0, 1,2)*C( 0, 0,3)-
+     &S( 1, 0,1)*S( 0, 1,2)*S( 0, 0,3) 
+       SS( 2, 4,1)=
+     &C( 1, 0,1)*C( 0, 0,2)*C( 0, 1,3)-
+     &S( 1, 0,1)*S( 0, 0,2)*C( 0, 1,3)-
+     &C( 1, 0,1)*S( 0, 0,2)*S( 0, 1,3)-
+     &S( 1, 0,1)*C( 0, 0,2)*S( 0, 1,3) 
+       SS( 2, 4,2)=
+     &C( 1, 0,1)*C( 0, 0,2)*S( 0, 1,3)+
+     &C( 1, 0,1)*S( 0, 0,2)*C( 0, 1,3)+
+     &S( 1, 0,1)*C( 0, 0,2)*C( 0, 1,3)-
+     &S( 1, 0,1)*S( 0, 0,2)*S( 0, 1,3) 
+       SS( 2, 5,1)=
+     &C( 1, 2,1)*C( 0, 0,2)*C( 0, 0,3)-
+     &S( 1, 2,1)*S( 0, 0,2)*C( 0, 0,3)-
+     &C( 1, 2,1)*S( 0, 0,2)*S( 0, 0,3)-
+     &S( 1, 2,1)*C( 0, 0,2)*S( 0, 0,3) 
+       SS( 2, 5,2)=
+     &C( 1, 2,1)*C( 0, 0,2)*S( 0, 0,3)+
+     &C( 1, 2,1)*S( 0, 0,2)*C( 0, 0,3)+
+     &S( 1, 2,1)*C( 0, 0,2)*C( 0, 0,3)-
+     &S( 1, 2,1)*S( 0, 0,2)*S( 0, 0,3) 
+       SS( 2, 6,1)=
+     &C( 1, 0,1)*C( 0, 2,2)*C( 0, 0,3)-
+     &S( 1, 0,1)*S( 0, 2,2)*C( 0, 0,3)-
+     &C( 1, 0,1)*S( 0, 2,2)*S( 0, 0,3)-
+     &S( 1, 0,1)*C( 0, 2,2)*S( 0, 0,3) 
+       SS( 2, 6,2)=
+     &C( 1, 0,1)*C( 0, 2,2)*S( 0, 0,3)+
+     &C( 1, 0,1)*S( 0, 2,2)*C( 0, 0,3)+
+     &S( 1, 0,1)*C( 0, 2,2)*C( 0, 0,3)-
+     &S( 1, 0,1)*S( 0, 2,2)*S( 0, 0,3) 
+       SS( 2, 7,1)=
+     &C( 1, 0,1)*C( 0, 0,2)*C( 0, 2,3)-
+     &S( 1, 0,1)*S( 0, 0,2)*C( 0, 2,3)-
+     &C( 1, 0,1)*S( 0, 0,2)*S( 0, 2,3)-
+     &S( 1, 0,1)*C( 0, 0,2)*S( 0, 2,3) 
+       SS( 2, 7,2)=
+     &C( 1, 0,1)*C( 0, 0,2)*S( 0, 2,3)+
+     &C( 1, 0,1)*S( 0, 0,2)*C( 0, 2,3)+
+     &S( 1, 0,1)*C( 0, 0,2)*C( 0, 2,3)-
+     &S( 1, 0,1)*S( 0, 0,2)*S( 0, 2,3) 
+       SS( 2, 8,1)=
+     &C( 1, 1,1)*C( 0, 1,2)*C( 0, 0,3)-
+     &S( 1, 1,1)*S( 0, 1,2)*C( 0, 0,3)-
+     &C( 1, 1,1)*S( 0, 1,2)*S( 0, 0,3)-
+     &S( 1, 1,1)*C( 0, 1,2)*S( 0, 0,3) 
+       SS( 2, 8,2)=
+     &C( 1, 1,1)*C( 0, 1,2)*S( 0, 0,3)+
+     &C( 1, 1,1)*S( 0, 1,2)*C( 0, 0,3)+
+     &S( 1, 1,1)*C( 0, 1,2)*C( 0, 0,3)-
+     &S( 1, 1,1)*S( 0, 1,2)*S( 0, 0,3) 
+       SS( 2, 9,1)=
+     &C( 1, 1,1)*C( 0, 0,2)*C( 0, 1,3)-
+     &S( 1, 1,1)*S( 0, 0,2)*C( 0, 1,3)-
+     &C( 1, 1,1)*S( 0, 0,2)*S( 0, 1,3)-
+     &S( 1, 1,1)*C( 0, 0,2)*S( 0, 1,3) 
+       SS( 2, 9,2)=
+     &C( 1, 1,1)*C( 0, 0,2)*S( 0, 1,3)+
+     &C( 1, 1,1)*S( 0, 0,2)*C( 0, 1,3)+
+     &S( 1, 1,1)*C( 0, 0,2)*C( 0, 1,3)-
+     &S( 1, 1,1)*S( 0, 0,2)*S( 0, 1,3) 
+       SS( 2,10,1)=
+     &C( 1, 0,1)*C( 0, 1,2)*C( 0, 1,3)-
+     &S( 1, 0,1)*S( 0, 1,2)*C( 0, 1,3)-
+     &C( 1, 0,1)*S( 0, 1,2)*S( 0, 1,3)-
+     &S( 1, 0,1)*C( 0, 1,2)*S( 0, 1,3) 
+       SS( 2,10,2)=
+     &C( 1, 0,1)*C( 0, 1,2)*S( 0, 1,3)+
+     &C( 1, 0,1)*S( 0, 1,2)*C( 0, 1,3)+
+     &S( 1, 0,1)*C( 0, 1,2)*C( 0, 1,3)-
+     &S( 1, 0,1)*S( 0, 1,2)*S( 0, 1,3) 
+       SS( 3, 1,1)=
+     &C( 0, 0,1)*C( 1, 0,2)*C( 0, 0,3)-
+     &S( 0, 0,1)*S( 1, 0,2)*C( 0, 0,3)-
+     &C( 0, 0,1)*S( 1, 0,2)*S( 0, 0,3)-
+     &S( 0, 0,1)*C( 1, 0,2)*S( 0, 0,3) 
+       SS( 3, 1,2)=
+     &C( 0, 0,1)*C( 1, 0,2)*S( 0, 0,3)+
+     &C( 0, 0,1)*S( 1, 0,2)*C( 0, 0,3)+
+     &S( 0, 0,1)*C( 1, 0,2)*C( 0, 0,3)-
+     &S( 0, 0,1)*S( 1, 0,2)*S( 0, 0,3) 
+       SS( 3, 2,1)=
+     &C( 0, 1,1)*C( 1, 0,2)*C( 0, 0,3)-
+     &S( 0, 1,1)*S( 1, 0,2)*C( 0, 0,3)-
+     &C( 0, 1,1)*S( 1, 0,2)*S( 0, 0,3)-
+     &S( 0, 1,1)*C( 1, 0,2)*S( 0, 0,3) 
+       SS( 3, 2,2)=
+     &C( 0, 1,1)*C( 1, 0,2)*S( 0, 0,3)+
+     &C( 0, 1,1)*S( 1, 0,2)*C( 0, 0,3)+
+     &S( 0, 1,1)*C( 1, 0,2)*C( 0, 0,3)-
+     &S( 0, 1,1)*S( 1, 0,2)*S( 0, 0,3) 
+       SS( 3, 3,1)=
+     &C( 0, 0,1)*C( 1, 1,2)*C( 0, 0,3)-
+     &S( 0, 0,1)*S( 1, 1,2)*C( 0, 0,3)-
+     &C( 0, 0,1)*S( 1, 1,2)*S( 0, 0,3)-
+     &S( 0, 0,1)*C( 1, 1,2)*S( 0, 0,3) 
+       SS( 3, 3,2)=
+     &C( 0, 0,1)*C( 1, 1,2)*S( 0, 0,3)+
+     &C( 0, 0,1)*S( 1, 1,2)*C( 0, 0,3)+
+     &S( 0, 0,1)*C( 1, 1,2)*C( 0, 0,3)-
+     &S( 0, 0,1)*S( 1, 1,2)*S( 0, 0,3) 
+       SS( 3, 4,1)=
+     &C( 0, 0,1)*C( 1, 0,2)*C( 0, 1,3)-
+     &S( 0, 0,1)*S( 1, 0,2)*C( 0, 1,3)-
+     &C( 0, 0,1)*S( 1, 0,2)*S( 0, 1,3)-
+     &S( 0, 0,1)*C( 1, 0,2)*S( 0, 1,3) 
+       SS( 3, 4,2)=
+     &C( 0, 0,1)*C( 1, 0,2)*S( 0, 1,3)+
+     &C( 0, 0,1)*S( 1, 0,2)*C( 0, 1,3)+
+     &S( 0, 0,1)*C( 1, 0,2)*C( 0, 1,3)-
+     &S( 0, 0,1)*S( 1, 0,2)*S( 0, 1,3) 
+       SS( 3, 5,1)=
+     &C( 0, 2,1)*C( 1, 0,2)*C( 0, 0,3)-
+     &S( 0, 2,1)*S( 1, 0,2)*C( 0, 0,3)-
+     &C( 0, 2,1)*S( 1, 0,2)*S( 0, 0,3)-
+     &S( 0, 2,1)*C( 1, 0,2)*S( 0, 0,3) 
+       SS( 3, 5,2)=
+     &C( 0, 2,1)*C( 1, 0,2)*S( 0, 0,3)+
+     &C( 0, 2,1)*S( 1, 0,2)*C( 0, 0,3)+
+     &S( 0, 2,1)*C( 1, 0,2)*C( 0, 0,3)-
+     &S( 0, 2,1)*S( 1, 0,2)*S( 0, 0,3) 
+       SS( 3, 6,1)=
+     &C( 0, 0,1)*C( 1, 2,2)*C( 0, 0,3)-
+     &S( 0, 0,1)*S( 1, 2,2)*C( 0, 0,3)-
+     &C( 0, 0,1)*S( 1, 2,2)*S( 0, 0,3)-
+     &S( 0, 0,1)*C( 1, 2,2)*S( 0, 0,3) 
+       SS( 3, 6,2)=
+     &C( 0, 0,1)*C( 1, 2,2)*S( 0, 0,3)+
+     &C( 0, 0,1)*S( 1, 2,2)*C( 0, 0,3)+
+     &S( 0, 0,1)*C( 1, 2,2)*C( 0, 0,3)-
+     &S( 0, 0,1)*S( 1, 2,2)*S( 0, 0,3) 
+       SS( 3, 7,1)=
+     &C( 0, 0,1)*C( 1, 0,2)*C( 0, 2,3)-
+     &S( 0, 0,1)*S( 1, 0,2)*C( 0, 2,3)-
+     &C( 0, 0,1)*S( 1, 0,2)*S( 0, 2,3)-
+     &S( 0, 0,1)*C( 1, 0,2)*S( 0, 2,3) 
+       SS( 3, 7,2)=
+     &C( 0, 0,1)*C( 1, 0,2)*S( 0, 2,3)+
+     &C( 0, 0,1)*S( 1, 0,2)*C( 0, 2,3)+
+     &S( 0, 0,1)*C( 1, 0,2)*C( 0, 2,3)-
+     &S( 0, 0,1)*S( 1, 0,2)*S( 0, 2,3) 
+       SS( 3, 8,1)=
+     &C( 0, 1,1)*C( 1, 1,2)*C( 0, 0,3)-
+     &S( 0, 1,1)*S( 1, 1,2)*C( 0, 0,3)-
+     &C( 0, 1,1)*S( 1, 1,2)*S( 0, 0,3)-
+     &S( 0, 1,1)*C( 1, 1,2)*S( 0, 0,3) 
+       SS( 3, 8,2)=
+     &C( 0, 1,1)*C( 1, 1,2)*S( 0, 0,3)+
+     &C( 0, 1,1)*S( 1, 1,2)*C( 0, 0,3)+
+     &S( 0, 1,1)*C( 1, 1,2)*C( 0, 0,3)-
+     &S( 0, 1,1)*S( 1, 1,2)*S( 0, 0,3) 
+       SS( 3, 9,1)=
+     &C( 0, 1,1)*C( 1, 0,2)*C( 0, 1,3)-
+     &S( 0, 1,1)*S( 1, 0,2)*C( 0, 1,3)-
+     &C( 0, 1,1)*S( 1, 0,2)*S( 0, 1,3)-
+     &S( 0, 1,1)*C( 1, 0,2)*S( 0, 1,3) 
+       SS( 3, 9,2)=
+     &C( 0, 1,1)*C( 1, 0,2)*S( 0, 1,3)+
+     &C( 0, 1,1)*S( 1, 0,2)*C( 0, 1,3)+
+     &S( 0, 1,1)*C( 1, 0,2)*C( 0, 1,3)-
+     &S( 0, 1,1)*S( 1, 0,2)*S( 0, 1,3) 
+       SS( 3,10,1)=
+     &C( 0, 0,1)*C( 1, 1,2)*C( 0, 1,3)-
+     &S( 0, 0,1)*S( 1, 1,2)*C( 0, 1,3)-
+     &C( 0, 0,1)*S( 1, 1,2)*S( 0, 1,3)-
+     &S( 0, 0,1)*C( 1, 1,2)*S( 0, 1,3) 
+       SS( 3,10,2)=
+     &C( 0, 0,1)*C( 1, 1,2)*S( 0, 1,3)+
+     &C( 0, 0,1)*S( 1, 1,2)*C( 0, 1,3)+
+     &S( 0, 0,1)*C( 1, 1,2)*C( 0, 1,3)-
+     &S( 0, 0,1)*S( 1, 1,2)*S( 0, 1,3) 
+       SS( 4, 1,1)=
+     &C( 0, 0,1)*C( 0, 0,2)*C( 1, 0,3)-
+     &S( 0, 0,1)*S( 0, 0,2)*C( 1, 0,3)-
+     &C( 0, 0,1)*S( 0, 0,2)*S( 1, 0,3)-
+     &S( 0, 0,1)*C( 0, 0,2)*S( 1, 0,3) 
+       SS( 4, 1,2)=
+     &C( 0, 0,1)*C( 0, 0,2)*S( 1, 0,3)+
+     &C( 0, 0,1)*S( 0, 0,2)*C( 1, 0,3)+
+     &S( 0, 0,1)*C( 0, 0,2)*C( 1, 0,3)-
+     &S( 0, 0,1)*S( 0, 0,2)*S( 1, 0,3) 
+       SS( 4, 2,1)=
+     &C( 0, 1,1)*C( 0, 0,2)*C( 1, 0,3)-
+     &S( 0, 1,1)*S( 0, 0,2)*C( 1, 0,3)-
+     &C( 0, 1,1)*S( 0, 0,2)*S( 1, 0,3)-
+     &S( 0, 1,1)*C( 0, 0,2)*S( 1, 0,3) 
+       SS( 4, 2,2)=
+     &C( 0, 1,1)*C( 0, 0,2)*S( 1, 0,3)+
+     &C( 0, 1,1)*S( 0, 0,2)*C( 1, 0,3)+
+     &S( 0, 1,1)*C( 0, 0,2)*C( 1, 0,3)-
+     &S( 0, 1,1)*S( 0, 0,2)*S( 1, 0,3) 
+       SS( 4, 3,1)=
+     &C( 0, 0,1)*C( 0, 1,2)*C( 1, 0,3)-
+     &S( 0, 0,1)*S( 0, 1,2)*C( 1, 0,3)-
+     &C( 0, 0,1)*S( 0, 1,2)*S( 1, 0,3)-
+     &S( 0, 0,1)*C( 0, 1,2)*S( 1, 0,3) 
+       SS( 4, 3,2)=
+     &C( 0, 0,1)*C( 0, 1,2)*S( 1, 0,3)+
+     &C( 0, 0,1)*S( 0, 1,2)*C( 1, 0,3)+
+     &S( 0, 0,1)*C( 0, 1,2)*C( 1, 0,3)-
+     &S( 0, 0,1)*S( 0, 1,2)*S( 1, 0,3) 
+       SS( 4, 4,1)=
+     &C( 0, 0,1)*C( 0, 0,2)*C( 1, 1,3)-
+     &S( 0, 0,1)*S( 0, 0,2)*C( 1, 1,3)-
+     &C( 0, 0,1)*S( 0, 0,2)*S( 1, 1,3)-
+     &S( 0, 0,1)*C( 0, 0,2)*S( 1, 1,3) 
+       SS( 4, 4,2)=
+     &C( 0, 0,1)*C( 0, 0,2)*S( 1, 1,3)+
+     &C( 0, 0,1)*S( 0, 0,2)*C( 1, 1,3)+
+     &S( 0, 0,1)*C( 0, 0,2)*C( 1, 1,3)-
+     &S( 0, 0,1)*S( 0, 0,2)*S( 1, 1,3) 
+       SS( 4, 5,1)=
+     &C( 0, 2,1)*C( 0, 0,2)*C( 1, 0,3)-
+     &S( 0, 2,1)*S( 0, 0,2)*C( 1, 0,3)-
+     &C( 0, 2,1)*S( 0, 0,2)*S( 1, 0,3)-
+     &S( 0, 2,1)*C( 0, 0,2)*S( 1, 0,3) 
+       SS( 4, 5,2)=
+     &C( 0, 2,1)*C( 0, 0,2)*S( 1, 0,3)+
+     &C( 0, 2,1)*S( 0, 0,2)*C( 1, 0,3)+
+     &S( 0, 2,1)*C( 0, 0,2)*C( 1, 0,3)-
+     &S( 0, 2,1)*S( 0, 0,2)*S( 1, 0,3) 
+       SS( 4, 6,1)=
+     &C( 0, 0,1)*C( 0, 2,2)*C( 1, 0,3)-
+     &S( 0, 0,1)*S( 0, 2,2)*C( 1, 0,3)-
+     &C( 0, 0,1)*S( 0, 2,2)*S( 1, 0,3)-
+     &S( 0, 0,1)*C( 0, 2,2)*S( 1, 0,3) 
+       SS( 4, 6,2)=
+     &C( 0, 0,1)*C( 0, 2,2)*S( 1, 0,3)+
+     &C( 0, 0,1)*S( 0, 2,2)*C( 1, 0,3)+
+     &S( 0, 0,1)*C( 0, 2,2)*C( 1, 0,3)-
+     &S( 0, 0,1)*S( 0, 2,2)*S( 1, 0,3) 
+       SS( 4, 7,1)=
+     &C( 0, 0,1)*C( 0, 0,2)*C( 1, 2,3)-
+     &S( 0, 0,1)*S( 0, 0,2)*C( 1, 2,3)-
+     &C( 0, 0,1)*S( 0, 0,2)*S( 1, 2,3)-
+     &S( 0, 0,1)*C( 0, 0,2)*S( 1, 2,3) 
+       SS( 4, 7,2)=
+     &C( 0, 0,1)*C( 0, 0,2)*S( 1, 2,3)+
+     &C( 0, 0,1)*S( 0, 0,2)*C( 1, 2,3)+
+     &S( 0, 0,1)*C( 0, 0,2)*C( 1, 2,3)-
+     &S( 0, 0,1)*S( 0, 0,2)*S( 1, 2,3) 
+       SS( 4, 8,1)=
+     &C( 0, 1,1)*C( 0, 1,2)*C( 1, 0,3)-
+     &S( 0, 1,1)*S( 0, 1,2)*C( 1, 0,3)-
+     &C( 0, 1,1)*S( 0, 1,2)*S( 1, 0,3)-
+     &S( 0, 1,1)*C( 0, 1,2)*S( 1, 0,3) 
+       SS( 4, 8,2)=
+     &C( 0, 1,1)*C( 0, 1,2)*S( 1, 0,3)+
+     &C( 0, 1,1)*S( 0, 1,2)*C( 1, 0,3)+
+     &S( 0, 1,1)*C( 0, 1,2)*C( 1, 0,3)-
+     &S( 0, 1,1)*S( 0, 1,2)*S( 1, 0,3) 
+       SS( 4, 9,1)=
+     &C( 0, 1,1)*C( 0, 0,2)*C( 1, 1,3)-
+     &S( 0, 1,1)*S( 0, 0,2)*C( 1, 1,3)-
+     &C( 0, 1,1)*S( 0, 0,2)*S( 1, 1,3)-
+     &S( 0, 1,1)*C( 0, 0,2)*S( 1, 1,3) 
+       SS( 4, 9,2)=
+     &C( 0, 1,1)*C( 0, 0,2)*S( 1, 1,3)+
+     &C( 0, 1,1)*S( 0, 0,2)*C( 1, 1,3)+
+     &S( 0, 1,1)*C( 0, 0,2)*C( 1, 1,3)-
+     &S( 0, 1,1)*S( 0, 0,2)*S( 1, 1,3) 
+       SS( 4,10,1)=
+     &C( 0, 0,1)*C( 0, 1,2)*C( 1, 1,3)-
+     &S( 0, 0,1)*S( 0, 1,2)*C( 1, 1,3)-
+     &C( 0, 0,1)*S( 0, 1,2)*S( 1, 1,3)-
+     &S( 0, 0,1)*C( 0, 1,2)*S( 1, 1,3) 
+       SS( 4,10,2)=
+     &C( 0, 0,1)*C( 0, 1,2)*S( 1, 1,3)+
+     &C( 0, 0,1)*S( 0, 1,2)*C( 1, 1,3)+
+     &S( 0, 0,1)*C( 0, 1,2)*C( 1, 1,3)-
+     &S( 0, 0,1)*S( 0, 1,2)*S( 1, 1,3) 
+       SS( 5, 1,1)=
+     &C( 2, 0,1)*C( 0, 0,2)*C( 0, 0,3)-
+     &S( 2, 0,1)*S( 0, 0,2)*C( 0, 0,3)-
+     &C( 2, 0,1)*S( 0, 0,2)*S( 0, 0,3)-
+     &S( 2, 0,1)*C( 0, 0,2)*S( 0, 0,3) 
+       SS( 5, 1,2)=
+     &C( 2, 0,1)*C( 0, 0,2)*S( 0, 0,3)+
+     &C( 2, 0,1)*S( 0, 0,2)*C( 0, 0,3)+
+     &S( 2, 0,1)*C( 0, 0,2)*C( 0, 0,3)-
+     &S( 2, 0,1)*S( 0, 0,2)*S( 0, 0,3) 
+       SS( 5, 2,1)=
+     &C( 2, 1,1)*C( 0, 0,2)*C( 0, 0,3)-
+     &S( 2, 1,1)*S( 0, 0,2)*C( 0, 0,3)-
+     &C( 2, 1,1)*S( 0, 0,2)*S( 0, 0,3)-
+     &S( 2, 1,1)*C( 0, 0,2)*S( 0, 0,3) 
+       SS( 5, 2,2)=
+     &C( 2, 1,1)*C( 0, 0,2)*S( 0, 0,3)+
+     &C( 2, 1,1)*S( 0, 0,2)*C( 0, 0,3)+
+     &S( 2, 1,1)*C( 0, 0,2)*C( 0, 0,3)-
+     &S( 2, 1,1)*S( 0, 0,2)*S( 0, 0,3) 
+       SS( 5, 3,1)=
+     &C( 2, 0,1)*C( 0, 1,2)*C( 0, 0,3)-
+     &S( 2, 0,1)*S( 0, 1,2)*C( 0, 0,3)-
+     &C( 2, 0,1)*S( 0, 1,2)*S( 0, 0,3)-
+     &S( 2, 0,1)*C( 0, 1,2)*S( 0, 0,3) 
+       SS( 5, 3,2)=
+     &C( 2, 0,1)*C( 0, 1,2)*S( 0, 0,3)+
+     &C( 2, 0,1)*S( 0, 1,2)*C( 0, 0,3)+
+     &S( 2, 0,1)*C( 0, 1,2)*C( 0, 0,3)-
+     &S( 2, 0,1)*S( 0, 1,2)*S( 0, 0,3) 
+       SS( 5, 4,1)=
+     &C( 2, 0,1)*C( 0, 0,2)*C( 0, 1,3)-
+     &S( 2, 0,1)*S( 0, 0,2)*C( 0, 1,3)-
+     &C( 2, 0,1)*S( 0, 0,2)*S( 0, 1,3)-
+     &S( 2, 0,1)*C( 0, 0,2)*S( 0, 1,3) 
+       SS( 5, 4,2)=
+     &C( 2, 0,1)*C( 0, 0,2)*S( 0, 1,3)+
+     &C( 2, 0,1)*S( 0, 0,2)*C( 0, 1,3)+
+     &S( 2, 0,1)*C( 0, 0,2)*C( 0, 1,3)-
+     &S( 2, 0,1)*S( 0, 0,2)*S( 0, 1,3) 
+       SS( 5, 5,1)=
+     &C( 2, 2,1)*C( 0, 0,2)*C( 0, 0,3)-
+     &S( 2, 2,1)*S( 0, 0,2)*C( 0, 0,3)-
+     &C( 2, 2,1)*S( 0, 0,2)*S( 0, 0,3)-
+     &S( 2, 2,1)*C( 0, 0,2)*S( 0, 0,3) 
+       SS( 5, 5,2)=
+     &C( 2, 2,1)*C( 0, 0,2)*S( 0, 0,3)+
+     &C( 2, 2,1)*S( 0, 0,2)*C( 0, 0,3)+
+     &S( 2, 2,1)*C( 0, 0,2)*C( 0, 0,3)-
+     &S( 2, 2,1)*S( 0, 0,2)*S( 0, 0,3) 
+       SS( 5, 6,1)=
+     &C( 2, 0,1)*C( 0, 2,2)*C( 0, 0,3)-
+     &S( 2, 0,1)*S( 0, 2,2)*C( 0, 0,3)-
+     &C( 2, 0,1)*S( 0, 2,2)*S( 0, 0,3)-
+     &S( 2, 0,1)*C( 0, 2,2)*S( 0, 0,3) 
+       SS( 5, 6,2)=
+     &C( 2, 0,1)*C( 0, 2,2)*S( 0, 0,3)+
+     &C( 2, 0,1)*S( 0, 2,2)*C( 0, 0,3)+
+     &S( 2, 0,1)*C( 0, 2,2)*C( 0, 0,3)-
+     &S( 2, 0,1)*S( 0, 2,2)*S( 0, 0,3) 
+       SS( 5, 7,1)=
+     &C( 2, 0,1)*C( 0, 0,2)*C( 0, 2,3)-
+     &S( 2, 0,1)*S( 0, 0,2)*C( 0, 2,3)-
+     &C( 2, 0,1)*S( 0, 0,2)*S( 0, 2,3)-
+     &S( 2, 0,1)*C( 0, 0,2)*S( 0, 2,3) 
+       SS( 5, 7,2)=
+     &C( 2, 0,1)*C( 0, 0,2)*S( 0, 2,3)+
+     &C( 2, 0,1)*S( 0, 0,2)*C( 0, 2,3)+
+     &S( 2, 0,1)*C( 0, 0,2)*C( 0, 2,3)-
+     &S( 2, 0,1)*S( 0, 0,2)*S( 0, 2,3) 
+       SS( 5, 8,1)=
+     &C( 2, 1,1)*C( 0, 1,2)*C( 0, 0,3)-
+     &S( 2, 1,1)*S( 0, 1,2)*C( 0, 0,3)-
+     &C( 2, 1,1)*S( 0, 1,2)*S( 0, 0,3)-
+     &S( 2, 1,1)*C( 0, 1,2)*S( 0, 0,3) 
+       SS( 5, 8,2)=
+     &C( 2, 1,1)*C( 0, 1,2)*S( 0, 0,3)+
+     &C( 2, 1,1)*S( 0, 1,2)*C( 0, 0,3)+
+     &S( 2, 1,1)*C( 0, 1,2)*C( 0, 0,3)-
+     &S( 2, 1,1)*S( 0, 1,2)*S( 0, 0,3) 
+       SS( 5, 9,1)=
+     &C( 2, 1,1)*C( 0, 0,2)*C( 0, 1,3)-
+     &S( 2, 1,1)*S( 0, 0,2)*C( 0, 1,3)-
+     &C( 2, 1,1)*S( 0, 0,2)*S( 0, 1,3)-
+     &S( 2, 1,1)*C( 0, 0,2)*S( 0, 1,3) 
+       SS( 5, 9,2)=
+     &C( 2, 1,1)*C( 0, 0,2)*S( 0, 1,3)+
+     &C( 2, 1,1)*S( 0, 0,2)*C( 0, 1,3)+
+     &S( 2, 1,1)*C( 0, 0,2)*C( 0, 1,3)-
+     &S( 2, 1,1)*S( 0, 0,2)*S( 0, 1,3) 
+       SS( 5,10,1)=
+     &C( 2, 0,1)*C( 0, 1,2)*C( 0, 1,3)-
+     &S( 2, 0,1)*S( 0, 1,2)*C( 0, 1,3)-
+     &C( 2, 0,1)*S( 0, 1,2)*S( 0, 1,3)-
+     &S( 2, 0,1)*C( 0, 1,2)*S( 0, 1,3) 
+       SS( 5,10,2)=
+     &C( 2, 0,1)*C( 0, 1,2)*S( 0, 1,3)+
+     &C( 2, 0,1)*S( 0, 1,2)*C( 0, 1,3)+
+     &S( 2, 0,1)*C( 0, 1,2)*C( 0, 1,3)-
+     &S( 2, 0,1)*S( 0, 1,2)*S( 0, 1,3) 
+       SS( 6, 1,1)=
+     &C( 0, 0,1)*C( 2, 0,2)*C( 0, 0,3)-
+     &S( 0, 0,1)*S( 2, 0,2)*C( 0, 0,3)-
+     &C( 0, 0,1)*S( 2, 0,2)*S( 0, 0,3)-
+     &S( 0, 0,1)*C( 2, 0,2)*S( 0, 0,3) 
+       SS( 6, 1,2)=
+     &C( 0, 0,1)*C( 2, 0,2)*S( 0, 0,3)+
+     &C( 0, 0,1)*S( 2, 0,2)*C( 0, 0,3)+
+     &S( 0, 0,1)*C( 2, 0,2)*C( 0, 0,3)-
+     &S( 0, 0,1)*S( 2, 0,2)*S( 0, 0,3) 
+       SS( 6, 2,1)=
+     &C( 0, 1,1)*C( 2, 0,2)*C( 0, 0,3)-
+     &S( 0, 1,1)*S( 2, 0,2)*C( 0, 0,3)-
+     &C( 0, 1,1)*S( 2, 0,2)*S( 0, 0,3)-
+     &S( 0, 1,1)*C( 2, 0,2)*S( 0, 0,3) 
+       SS( 6, 2,2)=
+     &C( 0, 1,1)*C( 2, 0,2)*S( 0, 0,3)+
+     &C( 0, 1,1)*S( 2, 0,2)*C( 0, 0,3)+
+     &S( 0, 1,1)*C( 2, 0,2)*C( 0, 0,3)-
+     &S( 0, 1,1)*S( 2, 0,2)*S( 0, 0,3) 
+       SS( 6, 3,1)=
+     &C( 0, 0,1)*C( 2, 1,2)*C( 0, 0,3)-
+     &S( 0, 0,1)*S( 2, 1,2)*C( 0, 0,3)-
+     &C( 0, 0,1)*S( 2, 1,2)*S( 0, 0,3)-
+     &S( 0, 0,1)*C( 2, 1,2)*S( 0, 0,3) 
+       SS( 6, 3,2)=
+     &C( 0, 0,1)*C( 2, 1,2)*S( 0, 0,3)+
+     &C( 0, 0,1)*S( 2, 1,2)*C( 0, 0,3)+
+     &S( 0, 0,1)*C( 2, 1,2)*C( 0, 0,3)-
+     &S( 0, 0,1)*S( 2, 1,2)*S( 0, 0,3) 
+       SS( 6, 4,1)=
+     &C( 0, 0,1)*C( 2, 0,2)*C( 0, 1,3)-
+     &S( 0, 0,1)*S( 2, 0,2)*C( 0, 1,3)-
+     &C( 0, 0,1)*S( 2, 0,2)*S( 0, 1,3)-
+     &S( 0, 0,1)*C( 2, 0,2)*S( 0, 1,3) 
+       SS( 6, 4,2)=
+     &C( 0, 0,1)*C( 2, 0,2)*S( 0, 1,3)+
+     &C( 0, 0,1)*S( 2, 0,2)*C( 0, 1,3)+
+     &S( 0, 0,1)*C( 2, 0,2)*C( 0, 1,3)-
+     &S( 0, 0,1)*S( 2, 0,2)*S( 0, 1,3) 
+       SS( 6, 5,1)=
+     &C( 0, 2,1)*C( 2, 0,2)*C( 0, 0,3)-
+     &S( 0, 2,1)*S( 2, 0,2)*C( 0, 0,3)-
+     &C( 0, 2,1)*S( 2, 0,2)*S( 0, 0,3)-
+     &S( 0, 2,1)*C( 2, 0,2)*S( 0, 0,3) 
+       SS( 6, 5,2)=
+     &C( 0, 2,1)*C( 2, 0,2)*S( 0, 0,3)+
+     &C( 0, 2,1)*S( 2, 0,2)*C( 0, 0,3)+
+     &S( 0, 2,1)*C( 2, 0,2)*C( 0, 0,3)-
+     &S( 0, 2,1)*S( 2, 0,2)*S( 0, 0,3) 
+       SS( 6, 6,1)=
+     &C( 0, 0,1)*C( 2, 2,2)*C( 0, 0,3)-
+     &S( 0, 0,1)*S( 2, 2,2)*C( 0, 0,3)-
+     &C( 0, 0,1)*S( 2, 2,2)*S( 0, 0,3)-
+     &S( 0, 0,1)*C( 2, 2,2)*S( 0, 0,3) 
+       SS( 6, 6,2)=
+     &C( 0, 0,1)*C( 2, 2,2)*S( 0, 0,3)+
+     &C( 0, 0,1)*S( 2, 2,2)*C( 0, 0,3)+
+     &S( 0, 0,1)*C( 2, 2,2)*C( 0, 0,3)-
+     &S( 0, 0,1)*S( 2, 2,2)*S( 0, 0,3) 
+       SS( 6, 7,1)=
+     &C( 0, 0,1)*C( 2, 0,2)*C( 0, 2,3)-
+     &S( 0, 0,1)*S( 2, 0,2)*C( 0, 2,3)-
+     &C( 0, 0,1)*S( 2, 0,2)*S( 0, 2,3)-
+     &S( 0, 0,1)*C( 2, 0,2)*S( 0, 2,3) 
+       SS( 6, 7,2)=
+     &C( 0, 0,1)*C( 2, 0,2)*S( 0, 2,3)+
+     &C( 0, 0,1)*S( 2, 0,2)*C( 0, 2,3)+
+     &S( 0, 0,1)*C( 2, 0,2)*C( 0, 2,3)-
+     &S( 0, 0,1)*S( 2, 0,2)*S( 0, 2,3) 
+       SS( 6, 8,1)=
+     &C( 0, 1,1)*C( 2, 1,2)*C( 0, 0,3)-
+     &S( 0, 1,1)*S( 2, 1,2)*C( 0, 0,3)-
+     &C( 0, 1,1)*S( 2, 1,2)*S( 0, 0,3)-
+     &S( 0, 1,1)*C( 2, 1,2)*S( 0, 0,3) 
+       SS( 6, 8,2)=
+     &C( 0, 1,1)*C( 2, 1,2)*S( 0, 0,3)+
+     &C( 0, 1,1)*S( 2, 1,2)*C( 0, 0,3)+
+     &S( 0, 1,1)*C( 2, 1,2)*C( 0, 0,3)-
+     &S( 0, 1,1)*S( 2, 1,2)*S( 0, 0,3) 
+       SS( 6, 9,1)=
+     &C( 0, 1,1)*C( 2, 0,2)*C( 0, 1,3)-
+     &S( 0, 1,1)*S( 2, 0,2)*C( 0, 1,3)-
+     &C( 0, 1,1)*S( 2, 0,2)*S( 0, 1,3)-
+     &S( 0, 1,1)*C( 2, 0,2)*S( 0, 1,3) 
+       SS( 6, 9,2)=
+     &C( 0, 1,1)*C( 2, 0,2)*S( 0, 1,3)+
+     &C( 0, 1,1)*S( 2, 0,2)*C( 0, 1,3)+
+     &S( 0, 1,1)*C( 2, 0,2)*C( 0, 1,3)-
+     &S( 0, 1,1)*S( 2, 0,2)*S( 0, 1,3) 
+       SS( 6,10,1)=
+     &C( 0, 0,1)*C( 2, 1,2)*C( 0, 1,3)-
+     &S( 0, 0,1)*S( 2, 1,2)*C( 0, 1,3)-
+     &C( 0, 0,1)*S( 2, 1,2)*S( 0, 1,3)-
+     &S( 0, 0,1)*C( 2, 1,2)*S( 0, 1,3) 
+       SS( 6,10,2)=
+     &C( 0, 0,1)*C( 2, 1,2)*S( 0, 1,3)+
+     &C( 0, 0,1)*S( 2, 1,2)*C( 0, 1,3)+
+     &S( 0, 0,1)*C( 2, 1,2)*C( 0, 1,3)-
+     &S( 0, 0,1)*S( 2, 1,2)*S( 0, 1,3) 
+       SS( 7, 1,1)=
+     &C( 0, 0,1)*C( 0, 0,2)*C( 2, 0,3)-
+     &S( 0, 0,1)*S( 0, 0,2)*C( 2, 0,3)-
+     &C( 0, 0,1)*S( 0, 0,2)*S( 2, 0,3)-
+     &S( 0, 0,1)*C( 0, 0,2)*S( 2, 0,3) 
+       SS( 7, 1,2)=
+     &C( 0, 0,1)*C( 0, 0,2)*S( 2, 0,3)+
+     &C( 0, 0,1)*S( 0, 0,2)*C( 2, 0,3)+
+     &S( 0, 0,1)*C( 0, 0,2)*C( 2, 0,3)-
+     &S( 0, 0,1)*S( 0, 0,2)*S( 2, 0,3) 
+       SS( 7, 2,1)=
+     &C( 0, 1,1)*C( 0, 0,2)*C( 2, 0,3)-
+     &S( 0, 1,1)*S( 0, 0,2)*C( 2, 0,3)-
+     &C( 0, 1,1)*S( 0, 0,2)*S( 2, 0,3)-
+     &S( 0, 1,1)*C( 0, 0,2)*S( 2, 0,3) 
+       SS( 7, 2,2)=
+     &C( 0, 1,1)*C( 0, 0,2)*S( 2, 0,3)+
+     &C( 0, 1,1)*S( 0, 0,2)*C( 2, 0,3)+
+     &S( 0, 1,1)*C( 0, 0,2)*C( 2, 0,3)-
+     &S( 0, 1,1)*S( 0, 0,2)*S( 2, 0,3) 
+       SS( 7, 3,1)=
+     &C( 0, 0,1)*C( 0, 1,2)*C( 2, 0,3)-
+     &S( 0, 0,1)*S( 0, 1,2)*C( 2, 0,3)-
+     &C( 0, 0,1)*S( 0, 1,2)*S( 2, 0,3)-
+     &S( 0, 0,1)*C( 0, 1,2)*S( 2, 0,3) 
+       SS( 7, 3,2)=
+     &C( 0, 0,1)*C( 0, 1,2)*S( 2, 0,3)+
+     &C( 0, 0,1)*S( 0, 1,2)*C( 2, 0,3)+
+     &S( 0, 0,1)*C( 0, 1,2)*C( 2, 0,3)-
+     &S( 0, 0,1)*S( 0, 1,2)*S( 2, 0,3) 
+       SS( 7, 4,1)=
+     &C( 0, 0,1)*C( 0, 0,2)*C( 2, 1,3)-
+     &S( 0, 0,1)*S( 0, 0,2)*C( 2, 1,3)-
+     &C( 0, 0,1)*S( 0, 0,2)*S( 2, 1,3)-
+     &S( 0, 0,1)*C( 0, 0,2)*S( 2, 1,3) 
+       SS( 7, 4,2)=
+     &C( 0, 0,1)*C( 0, 0,2)*S( 2, 1,3)+
+     &C( 0, 0,1)*S( 0, 0,2)*C( 2, 1,3)+
+     &S( 0, 0,1)*C( 0, 0,2)*C( 2, 1,3)-
+     &S( 0, 0,1)*S( 0, 0,2)*S( 2, 1,3) 
+       SS( 7, 5,1)=
+     &C( 0, 2,1)*C( 0, 0,2)*C( 2, 0,3)-
+     &S( 0, 2,1)*S( 0, 0,2)*C( 2, 0,3)-
+     &C( 0, 2,1)*S( 0, 0,2)*S( 2, 0,3)-
+     &S( 0, 2,1)*C( 0, 0,2)*S( 2, 0,3) 
+       SS( 7, 5,2)=
+     &C( 0, 2,1)*C( 0, 0,2)*S( 2, 0,3)+
+     &C( 0, 2,1)*S( 0, 0,2)*C( 2, 0,3)+
+     &S( 0, 2,1)*C( 0, 0,2)*C( 2, 0,3)-
+     &S( 0, 2,1)*S( 0, 0,2)*S( 2, 0,3) 
+       SS( 7, 6,1)=
+     &C( 0, 0,1)*C( 0, 2,2)*C( 2, 0,3)-
+     &S( 0, 0,1)*S( 0, 2,2)*C( 2, 0,3)-
+     &C( 0, 0,1)*S( 0, 2,2)*S( 2, 0,3)-
+     &S( 0, 0,1)*C( 0, 2,2)*S( 2, 0,3) 
+       SS( 7, 6,2)=
+     &C( 0, 0,1)*C( 0, 2,2)*S( 2, 0,3)+
+     &C( 0, 0,1)*S( 0, 2,2)*C( 2, 0,3)+
+     &S( 0, 0,1)*C( 0, 2,2)*C( 2, 0,3)-
+     &S( 0, 0,1)*S( 0, 2,2)*S( 2, 0,3) 
+       SS( 7, 7,1)=
+     &C( 0, 0,1)*C( 0, 0,2)*C( 2, 2,3)-
+     &S( 0, 0,1)*S( 0, 0,2)*C( 2, 2,3)-
+     &C( 0, 0,1)*S( 0, 0,2)*S( 2, 2,3)-
+     &S( 0, 0,1)*C( 0, 0,2)*S( 2, 2,3) 
+       SS( 7, 7,2)=
+     &C( 0, 0,1)*C( 0, 0,2)*S( 2, 2,3)+
+     &C( 0, 0,1)*S( 0, 0,2)*C( 2, 2,3)+
+     &S( 0, 0,1)*C( 0, 0,2)*C( 2, 2,3)-
+     &S( 0, 0,1)*S( 0, 0,2)*S( 2, 2,3) 
+       SS( 7, 8,1)=
+     &C( 0, 1,1)*C( 0, 1,2)*C( 2, 0,3)-
+     &S( 0, 1,1)*S( 0, 1,2)*C( 2, 0,3)-
+     &C( 0, 1,1)*S( 0, 1,2)*S( 2, 0,3)-
+     &S( 0, 1,1)*C( 0, 1,2)*S( 2, 0,3) 
+       SS( 7, 8,2)=
+     &C( 0, 1,1)*C( 0, 1,2)*S( 2, 0,3)+
+     &C( 0, 1,1)*S( 0, 1,2)*C( 2, 0,3)+
+     &S( 0, 1,1)*C( 0, 1,2)*C( 2, 0,3)-
+     &S( 0, 1,1)*S( 0, 1,2)*S( 2, 0,3) 
+       SS( 7, 9,1)=
+     &C( 0, 1,1)*C( 0, 0,2)*C( 2, 1,3)-
+     &S( 0, 1,1)*S( 0, 0,2)*C( 2, 1,3)-
+     &C( 0, 1,1)*S( 0, 0,2)*S( 2, 1,3)-
+     &S( 0, 1,1)*C( 0, 0,2)*S( 2, 1,3) 
+       SS( 7, 9,2)=
+     &C( 0, 1,1)*C( 0, 0,2)*S( 2, 1,3)+
+     &C( 0, 1,1)*S( 0, 0,2)*C( 2, 1,3)+
+     &S( 0, 1,1)*C( 0, 0,2)*C( 2, 1,3)-
+     &S( 0, 1,1)*S( 0, 0,2)*S( 2, 1,3) 
+       SS( 7,10,1)=
+     &C( 0, 0,1)*C( 0, 1,2)*C( 2, 1,3)-
+     &S( 0, 0,1)*S( 0, 1,2)*C( 2, 1,3)-
+     &C( 0, 0,1)*S( 0, 1,2)*S( 2, 1,3)-
+     &S( 0, 0,1)*C( 0, 1,2)*S( 2, 1,3) 
+       SS( 7,10,2)=
+     &C( 0, 0,1)*C( 0, 1,2)*S( 2, 1,3)+
+     &C( 0, 0,1)*S( 0, 1,2)*C( 2, 1,3)+
+     &S( 0, 0,1)*C( 0, 1,2)*C( 2, 1,3)-
+     &S( 0, 0,1)*S( 0, 1,2)*S( 2, 1,3) 
+       SS( 8, 1,1)=
+     &C( 1, 0,1)*C( 1, 0,2)*C( 0, 0,3)-
+     &S( 1, 0,1)*S( 1, 0,2)*C( 0, 0,3)-
+     &C( 1, 0,1)*S( 1, 0,2)*S( 0, 0,3)-
+     &S( 1, 0,1)*C( 1, 0,2)*S( 0, 0,3) 
+       SS( 8, 1,2)=
+     &C( 1, 0,1)*C( 1, 0,2)*S( 0, 0,3)+
+     &C( 1, 0,1)*S( 1, 0,2)*C( 0, 0,3)+
+     &S( 1, 0,1)*C( 1, 0,2)*C( 0, 0,3)-
+     &S( 1, 0,1)*S( 1, 0,2)*S( 0, 0,3) 
+       SS( 8, 2,1)=
+     &C( 1, 1,1)*C( 1, 0,2)*C( 0, 0,3)-
+     &S( 1, 1,1)*S( 1, 0,2)*C( 0, 0,3)-
+     &C( 1, 1,1)*S( 1, 0,2)*S( 0, 0,3)-
+     &S( 1, 1,1)*C( 1, 0,2)*S( 0, 0,3) 
+       SS( 8, 2,2)=
+     &C( 1, 1,1)*C( 1, 0,2)*S( 0, 0,3)+
+     &C( 1, 1,1)*S( 1, 0,2)*C( 0, 0,3)+
+     &S( 1, 1,1)*C( 1, 0,2)*C( 0, 0,3)-
+     &S( 1, 1,1)*S( 1, 0,2)*S( 0, 0,3) 
+       SS( 8, 3,1)=
+     &C( 1, 0,1)*C( 1, 1,2)*C( 0, 0,3)-
+     &S( 1, 0,1)*S( 1, 1,2)*C( 0, 0,3)-
+     &C( 1, 0,1)*S( 1, 1,2)*S( 0, 0,3)-
+     &S( 1, 0,1)*C( 1, 1,2)*S( 0, 0,3) 
+       SS( 8, 3,2)=
+     &C( 1, 0,1)*C( 1, 1,2)*S( 0, 0,3)+
+     &C( 1, 0,1)*S( 1, 1,2)*C( 0, 0,3)+
+     &S( 1, 0,1)*C( 1, 1,2)*C( 0, 0,3)-
+     &S( 1, 0,1)*S( 1, 1,2)*S( 0, 0,3) 
+       SS( 8, 4,1)=
+     &C( 1, 0,1)*C( 1, 0,2)*C( 0, 1,3)-
+     &S( 1, 0,1)*S( 1, 0,2)*C( 0, 1,3)-
+     &C( 1, 0,1)*S( 1, 0,2)*S( 0, 1,3)-
+     &S( 1, 0,1)*C( 1, 0,2)*S( 0, 1,3) 
+       SS( 8, 4,2)=
+     &C( 1, 0,1)*C( 1, 0,2)*S( 0, 1,3)+
+     &C( 1, 0,1)*S( 1, 0,2)*C( 0, 1,3)+
+     &S( 1, 0,1)*C( 1, 0,2)*C( 0, 1,3)-
+     &S( 1, 0,1)*S( 1, 0,2)*S( 0, 1,3) 
+       SS( 8, 5,1)=
+     &C( 1, 2,1)*C( 1, 0,2)*C( 0, 0,3)-
+     &S( 1, 2,1)*S( 1, 0,2)*C( 0, 0,3)-
+     &C( 1, 2,1)*S( 1, 0,2)*S( 0, 0,3)-
+     &S( 1, 2,1)*C( 1, 0,2)*S( 0, 0,3) 
+       SS( 8, 5,2)=
+     &C( 1, 2,1)*C( 1, 0,2)*S( 0, 0,3)+
+     &C( 1, 2,1)*S( 1, 0,2)*C( 0, 0,3)+
+     &S( 1, 2,1)*C( 1, 0,2)*C( 0, 0,3)-
+     &S( 1, 2,1)*S( 1, 0,2)*S( 0, 0,3) 
+       SS( 8, 6,1)=
+     &C( 1, 0,1)*C( 1, 2,2)*C( 0, 0,3)-
+     &S( 1, 0,1)*S( 1, 2,2)*C( 0, 0,3)-
+     &C( 1, 0,1)*S( 1, 2,2)*S( 0, 0,3)-
+     &S( 1, 0,1)*C( 1, 2,2)*S( 0, 0,3) 
+       SS( 8, 6,2)=
+     &C( 1, 0,1)*C( 1, 2,2)*S( 0, 0,3)+
+     &C( 1, 0,1)*S( 1, 2,2)*C( 0, 0,3)+
+     &S( 1, 0,1)*C( 1, 2,2)*C( 0, 0,3)-
+     &S( 1, 0,1)*S( 1, 2,2)*S( 0, 0,3) 
+       SS( 8, 7,1)=
+     &C( 1, 0,1)*C( 1, 0,2)*C( 0, 2,3)-
+     &S( 1, 0,1)*S( 1, 0,2)*C( 0, 2,3)-
+     &C( 1, 0,1)*S( 1, 0,2)*S( 0, 2,3)-
+     &S( 1, 0,1)*C( 1, 0,2)*S( 0, 2,3) 
+       SS( 8, 7,2)=
+     &C( 1, 0,1)*C( 1, 0,2)*S( 0, 2,3)+
+     &C( 1, 0,1)*S( 1, 0,2)*C( 0, 2,3)+
+     &S( 1, 0,1)*C( 1, 0,2)*C( 0, 2,3)-
+     &S( 1, 0,1)*S( 1, 0,2)*S( 0, 2,3) 
+       SS( 8, 8,1)=
+     &C( 1, 1,1)*C( 1, 1,2)*C( 0, 0,3)-
+     &S( 1, 1,1)*S( 1, 1,2)*C( 0, 0,3)-
+     &C( 1, 1,1)*S( 1, 1,2)*S( 0, 0,3)-
+     &S( 1, 1,1)*C( 1, 1,2)*S( 0, 0,3) 
+       SS( 8, 8,2)=
+     &C( 1, 1,1)*C( 1, 1,2)*S( 0, 0,3)+
+     &C( 1, 1,1)*S( 1, 1,2)*C( 0, 0,3)+
+     &S( 1, 1,1)*C( 1, 1,2)*C( 0, 0,3)-
+     &S( 1, 1,1)*S( 1, 1,2)*S( 0, 0,3) 
+       SS( 8, 9,1)=
+     &C( 1, 1,1)*C( 1, 0,2)*C( 0, 1,3)-
+     &S( 1, 1,1)*S( 1, 0,2)*C( 0, 1,3)-
+     &C( 1, 1,1)*S( 1, 0,2)*S( 0, 1,3)-
+     &S( 1, 1,1)*C( 1, 0,2)*S( 0, 1,3) 
+       SS( 8, 9,2)=
+     &C( 1, 1,1)*C( 1, 0,2)*S( 0, 1,3)+
+     &C( 1, 1,1)*S( 1, 0,2)*C( 0, 1,3)+
+     &S( 1, 1,1)*C( 1, 0,2)*C( 0, 1,3)-
+     &S( 1, 1,1)*S( 1, 0,2)*S( 0, 1,3) 
+       SS( 8,10,1)=
+     &C( 1, 0,1)*C( 1, 1,2)*C( 0, 1,3)-
+     &S( 1, 0,1)*S( 1, 1,2)*C( 0, 1,3)-
+     &C( 1, 0,1)*S( 1, 1,2)*S( 0, 1,3)-
+     &S( 1, 0,1)*C( 1, 1,2)*S( 0, 1,3) 
+       SS( 8,10,2)=
+     &C( 1, 0,1)*C( 1, 1,2)*S( 0, 1,3)+
+     &C( 1, 0,1)*S( 1, 1,2)*C( 0, 1,3)+
+     &S( 1, 0,1)*C( 1, 1,2)*C( 0, 1,3)-
+     &S( 1, 0,1)*S( 1, 1,2)*S( 0, 1,3) 
+       SS( 9, 1,1)=
+     &C( 1, 0,1)*C( 0, 0,2)*C( 1, 0,3)-
+     &S( 1, 0,1)*S( 0, 0,2)*C( 1, 0,3)-
+     &C( 1, 0,1)*S( 0, 0,2)*S( 1, 0,3)-
+     &S( 1, 0,1)*C( 0, 0,2)*S( 1, 0,3) 
+       SS( 9, 1,2)=
+     &C( 1, 0,1)*C( 0, 0,2)*S( 1, 0,3)+
+     &C( 1, 0,1)*S( 0, 0,2)*C( 1, 0,3)+
+     &S( 1, 0,1)*C( 0, 0,2)*C( 1, 0,3)-
+     &S( 1, 0,1)*S( 0, 0,2)*S( 1, 0,3) 
+       SS( 9, 2,1)=
+     &C( 1, 1,1)*C( 0, 0,2)*C( 1, 0,3)-
+     &S( 1, 1,1)*S( 0, 0,2)*C( 1, 0,3)-
+     &C( 1, 1,1)*S( 0, 0,2)*S( 1, 0,3)-
+     &S( 1, 1,1)*C( 0, 0,2)*S( 1, 0,3) 
+       SS( 9, 2,2)=
+     &C( 1, 1,1)*C( 0, 0,2)*S( 1, 0,3)+
+     &C( 1, 1,1)*S( 0, 0,2)*C( 1, 0,3)+
+     &S( 1, 1,1)*C( 0, 0,2)*C( 1, 0,3)-
+     &S( 1, 1,1)*S( 0, 0,2)*S( 1, 0,3) 
+       SS( 9, 3,1)=
+     &C( 1, 0,1)*C( 0, 1,2)*C( 1, 0,3)-
+     &S( 1, 0,1)*S( 0, 1,2)*C( 1, 0,3)-
+     &C( 1, 0,1)*S( 0, 1,2)*S( 1, 0,3)-
+     &S( 1, 0,1)*C( 0, 1,2)*S( 1, 0,3) 
+       SS( 9, 3,2)=
+     &C( 1, 0,1)*C( 0, 1,2)*S( 1, 0,3)+
+     &C( 1, 0,1)*S( 0, 1,2)*C( 1, 0,3)+
+     &S( 1, 0,1)*C( 0, 1,2)*C( 1, 0,3)-
+     &S( 1, 0,1)*S( 0, 1,2)*S( 1, 0,3) 
+       SS( 9, 4,1)=
+     &C( 1, 0,1)*C( 0, 0,2)*C( 1, 1,3)-
+     &S( 1, 0,1)*S( 0, 0,2)*C( 1, 1,3)-
+     &C( 1, 0,1)*S( 0, 0,2)*S( 1, 1,3)-
+     &S( 1, 0,1)*C( 0, 0,2)*S( 1, 1,3) 
+       SS( 9, 4,2)=
+     &C( 1, 0,1)*C( 0, 0,2)*S( 1, 1,3)+
+     &C( 1, 0,1)*S( 0, 0,2)*C( 1, 1,3)+
+     &S( 1, 0,1)*C( 0, 0,2)*C( 1, 1,3)-
+     &S( 1, 0,1)*S( 0, 0,2)*S( 1, 1,3) 
+       SS( 9, 5,1)=
+     &C( 1, 2,1)*C( 0, 0,2)*C( 1, 0,3)-
+     &S( 1, 2,1)*S( 0, 0,2)*C( 1, 0,3)-
+     &C( 1, 2,1)*S( 0, 0,2)*S( 1, 0,3)-
+     &S( 1, 2,1)*C( 0, 0,2)*S( 1, 0,3) 
+       SS( 9, 5,2)=
+     &C( 1, 2,1)*C( 0, 0,2)*S( 1, 0,3)+
+     &C( 1, 2,1)*S( 0, 0,2)*C( 1, 0,3)+
+     &S( 1, 2,1)*C( 0, 0,2)*C( 1, 0,3)-
+     &S( 1, 2,1)*S( 0, 0,2)*S( 1, 0,3) 
+       SS( 9, 6,1)=
+     &C( 1, 0,1)*C( 0, 2,2)*C( 1, 0,3)-
+     &S( 1, 0,1)*S( 0, 2,2)*C( 1, 0,3)-
+     &C( 1, 0,1)*S( 0, 2,2)*S( 1, 0,3)-
+     &S( 1, 0,1)*C( 0, 2,2)*S( 1, 0,3) 
+       SS( 9, 6,2)=
+     &C( 1, 0,1)*C( 0, 2,2)*S( 1, 0,3)+
+     &C( 1, 0,1)*S( 0, 2,2)*C( 1, 0,3)+
+     &S( 1, 0,1)*C( 0, 2,2)*C( 1, 0,3)-
+     &S( 1, 0,1)*S( 0, 2,2)*S( 1, 0,3) 
+       SS( 9, 7,1)=
+     &C( 1, 0,1)*C( 0, 0,2)*C( 1, 2,3)-
+     &S( 1, 0,1)*S( 0, 0,2)*C( 1, 2,3)-
+     &C( 1, 0,1)*S( 0, 0,2)*S( 1, 2,3)-
+     &S( 1, 0,1)*C( 0, 0,2)*S( 1, 2,3) 
+       SS( 9, 7,2)=
+     &C( 1, 0,1)*C( 0, 0,2)*S( 1, 2,3)+
+     &C( 1, 0,1)*S( 0, 0,2)*C( 1, 2,3)+
+     &S( 1, 0,1)*C( 0, 0,2)*C( 1, 2,3)-
+     &S( 1, 0,1)*S( 0, 0,2)*S( 1, 2,3) 
+       SS( 9, 8,1)=
+     &C( 1, 1,1)*C( 0, 1,2)*C( 1, 0,3)-
+     &S( 1, 1,1)*S( 0, 1,2)*C( 1, 0,3)-
+     &C( 1, 1,1)*S( 0, 1,2)*S( 1, 0,3)-
+     &S( 1, 1,1)*C( 0, 1,2)*S( 1, 0,3) 
+       SS( 9, 8,2)=
+     &C( 1, 1,1)*C( 0, 1,2)*S( 1, 0,3)+
+     &C( 1, 1,1)*S( 0, 1,2)*C( 1, 0,3)+
+     &S( 1, 1,1)*C( 0, 1,2)*C( 1, 0,3)-
+     &S( 1, 1,1)*S( 0, 1,2)*S( 1, 0,3) 
+       SS( 9, 9,1)=
+     &C( 1, 1,1)*C( 0, 0,2)*C( 1, 1,3)-
+     &S( 1, 1,1)*S( 0, 0,2)*C( 1, 1,3)-
+     &C( 1, 1,1)*S( 0, 0,2)*S( 1, 1,3)-
+     &S( 1, 1,1)*C( 0, 0,2)*S( 1, 1,3) 
+       SS( 9, 9,2)=
+     &C( 1, 1,1)*C( 0, 0,2)*S( 1, 1,3)+
+     &C( 1, 1,1)*S( 0, 0,2)*C( 1, 1,3)+
+     &S( 1, 1,1)*C( 0, 0,2)*C( 1, 1,3)-
+     &S( 1, 1,1)*S( 0, 0,2)*S( 1, 1,3) 
+       SS( 9,10,1)=
+     &C( 1, 0,1)*C( 0, 1,2)*C( 1, 1,3)-
+     &S( 1, 0,1)*S( 0, 1,2)*C( 1, 1,3)-
+     &C( 1, 0,1)*S( 0, 1,2)*S( 1, 1,3)-
+     &S( 1, 0,1)*C( 0, 1,2)*S( 1, 1,3) 
+       SS( 9,10,2)=
+     &C( 1, 0,1)*C( 0, 1,2)*S( 1, 1,3)+
+     &C( 1, 0,1)*S( 0, 1,2)*C( 1, 1,3)+
+     &S( 1, 0,1)*C( 0, 1,2)*C( 1, 1,3)-
+     &S( 1, 0,1)*S( 0, 1,2)*S( 1, 1,3) 
+       SS(10, 1,1)=
+     &C( 0, 0,1)*C( 1, 0,2)*C( 1, 0,3)-
+     &S( 0, 0,1)*S( 1, 0,2)*C( 1, 0,3)-
+     &C( 0, 0,1)*S( 1, 0,2)*S( 1, 0,3)-
+     &S( 0, 0,1)*C( 1, 0,2)*S( 1, 0,3) 
+       SS(10, 1,2)=
+     &C( 0, 0,1)*C( 1, 0,2)*S( 1, 0,3)+
+     &C( 0, 0,1)*S( 1, 0,2)*C( 1, 0,3)+
+     &S( 0, 0,1)*C( 1, 0,2)*C( 1, 0,3)-
+     &S( 0, 0,1)*S( 1, 0,2)*S( 1, 0,3) 
+       SS(10, 2,1)=
+     &C( 0, 1,1)*C( 1, 0,2)*C( 1, 0,3)-
+     &S( 0, 1,1)*S( 1, 0,2)*C( 1, 0,3)-
+     &C( 0, 1,1)*S( 1, 0,2)*S( 1, 0,3)-
+     &S( 0, 1,1)*C( 1, 0,2)*S( 1, 0,3) 
+       SS(10, 2,2)=
+     &C( 0, 1,1)*C( 1, 0,2)*S( 1, 0,3)+
+     &C( 0, 1,1)*S( 1, 0,2)*C( 1, 0,3)+
+     &S( 0, 1,1)*C( 1, 0,2)*C( 1, 0,3)-
+     &S( 0, 1,1)*S( 1, 0,2)*S( 1, 0,3) 
+       SS(10, 3,1)=
+     &C( 0, 0,1)*C( 1, 1,2)*C( 1, 0,3)-
+     &S( 0, 0,1)*S( 1, 1,2)*C( 1, 0,3)-
+     &C( 0, 0,1)*S( 1, 1,2)*S( 1, 0,3)-
+     &S( 0, 0,1)*C( 1, 1,2)*S( 1, 0,3) 
+       SS(10, 3,2)=
+     &C( 0, 0,1)*C( 1, 1,2)*S( 1, 0,3)+
+     &C( 0, 0,1)*S( 1, 1,2)*C( 1, 0,3)+
+     &S( 0, 0,1)*C( 1, 1,2)*C( 1, 0,3)-
+     &S( 0, 0,1)*S( 1, 1,2)*S( 1, 0,3) 
+       SS(10, 4,1)=
+     &C( 0, 0,1)*C( 1, 0,2)*C( 1, 1,3)-
+     &S( 0, 0,1)*S( 1, 0,2)*C( 1, 1,3)-
+     &C( 0, 0,1)*S( 1, 0,2)*S( 1, 1,3)-
+     &S( 0, 0,1)*C( 1, 0,2)*S( 1, 1,3) 
+       SS(10, 4,2)=
+     &C( 0, 0,1)*C( 1, 0,2)*S( 1, 1,3)+
+     &C( 0, 0,1)*S( 1, 0,2)*C( 1, 1,3)+
+     &S( 0, 0,1)*C( 1, 0,2)*C( 1, 1,3)-
+     &S( 0, 0,1)*S( 1, 0,2)*S( 1, 1,3) 
+       SS(10, 5,1)=
+     &C( 0, 2,1)*C( 1, 0,2)*C( 1, 0,3)-
+     &S( 0, 2,1)*S( 1, 0,2)*C( 1, 0,3)-
+     &C( 0, 2,1)*S( 1, 0,2)*S( 1, 0,3)-
+     &S( 0, 2,1)*C( 1, 0,2)*S( 1, 0,3) 
+       SS(10, 5,2)=
+     &C( 0, 2,1)*C( 1, 0,2)*S( 1, 0,3)+
+     &C( 0, 2,1)*S( 1, 0,2)*C( 1, 0,3)+
+     &S( 0, 2,1)*C( 1, 0,2)*C( 1, 0,3)-
+     &S( 0, 2,1)*S( 1, 0,2)*S( 1, 0,3) 
+       SS(10, 6,1)=
+     &C( 0, 0,1)*C( 1, 2,2)*C( 1, 0,3)-
+     &S( 0, 0,1)*S( 1, 2,2)*C( 1, 0,3)-
+     &C( 0, 0,1)*S( 1, 2,2)*S( 1, 0,3)-
+     &S( 0, 0,1)*C( 1, 2,2)*S( 1, 0,3) 
+       SS(10, 6,2)=
+     &C( 0, 0,1)*C( 1, 2,2)*S( 1, 0,3)+
+     &C( 0, 0,1)*S( 1, 2,2)*C( 1, 0,3)+
+     &S( 0, 0,1)*C( 1, 2,2)*C( 1, 0,3)-
+     &S( 0, 0,1)*S( 1, 2,2)*S( 1, 0,3) 
+       SS(10, 7,1)=
+     &C( 0, 0,1)*C( 1, 0,2)*C( 1, 2,3)-
+     &S( 0, 0,1)*S( 1, 0,2)*C( 1, 2,3)-
+     &C( 0, 0,1)*S( 1, 0,2)*S( 1, 2,3)-
+     &S( 0, 0,1)*C( 1, 0,2)*S( 1, 2,3) 
+       SS(10, 7,2)=
+     &C( 0, 0,1)*C( 1, 0,2)*S( 1, 2,3)+
+     &C( 0, 0,1)*S( 1, 0,2)*C( 1, 2,3)+
+     &S( 0, 0,1)*C( 1, 0,2)*C( 1, 2,3)-
+     &S( 0, 0,1)*S( 1, 0,2)*S( 1, 2,3) 
+       SS(10, 8,1)=
+     &C( 0, 1,1)*C( 1, 1,2)*C( 1, 0,3)-
+     &S( 0, 1,1)*S( 1, 1,2)*C( 1, 0,3)-
+     &C( 0, 1,1)*S( 1, 1,2)*S( 1, 0,3)-
+     &S( 0, 1,1)*C( 1, 1,2)*S( 1, 0,3) 
+       SS(10, 8,2)=
+     &C( 0, 1,1)*C( 1, 1,2)*S( 1, 0,3)+
+     &C( 0, 1,1)*S( 1, 1,2)*C( 1, 0,3)+
+     &S( 0, 1,1)*C( 1, 1,2)*C( 1, 0,3)-
+     &S( 0, 1,1)*S( 1, 1,2)*S( 1, 0,3) 
+       SS(10, 9,1)=
+     &C( 0, 1,1)*C( 1, 0,2)*C( 1, 1,3)-
+     &S( 0, 1,1)*S( 1, 0,2)*C( 1, 1,3)-
+     &C( 0, 1,1)*S( 1, 0,2)*S( 1, 1,3)-
+     &S( 0, 1,1)*C( 1, 0,2)*S( 1, 1,3) 
+       SS(10, 9,2)=
+     &C( 0, 1,1)*C( 1, 0,2)*S( 1, 1,3)+
+     &C( 0, 1,1)*S( 1, 0,2)*C( 1, 1,3)+
+     &S( 0, 1,1)*C( 1, 0,2)*C( 1, 1,3)-
+     &S( 0, 1,1)*S( 1, 0,2)*S( 1, 1,3) 
+       SS(10,10,1)=
+     &C( 0, 0,1)*C( 1, 1,2)*C( 1, 1,3)-
+     &S( 0, 0,1)*S( 1, 1,2)*C( 1, 1,3)-
+     &C( 0, 0,1)*S( 1, 1,2)*S( 1, 1,3)-
+     &S( 0, 0,1)*C( 1, 1,2)*S( 1, 1,3) 
+       SS(10,10,2)=
+     &C( 0, 0,1)*C( 1, 1,2)*S( 1, 1,3)+
+     &C( 0, 0,1)*S( 1, 1,2)*C( 1, 1,3)+
+     &S( 0, 0,1)*C( 1, 1,2)*C( 1, 1,3)-
+     &S( 0, 0,1)*S( 1, 1,2)*S( 1, 1,3) 
+       RETURN
+       END   
+C
+        SUBROUTINE IXNMAB(RK,ALP,BET,AA,BB,NM,MM,CT,ST)
+        IMPLICIT REAL*8 (A-H,O-Z)
+        PARAMETER (NDMN=4)
+        LOGICAL FIRST
+        DIMENSION F(0:NDMN),G(0:NDMN),BIN(0:NDMN,0:NDMN)
+        DIMENSION CT(0:NDMN,0:NDMN),ST(0:NDMN,0:NDMN)
+        DATA FIRST/.TRUE./
+           IF(FIRST)THEN
+           FIRST=.FALSE.
+C CALCULATE BINOMIAL COEFFICIENTS:
+               DO NTOP=0,NDMN
+               DO NBOT=0,NTOP
+                 TOP=FCTRL(NTOP)
+                 BOT=FCTRL(NBOT)*FCTRL(NTOP-NBOT)
+                 BIN(NTOP,NBOT)=TOP/BOT
+               END DO
+               END DO
+           END IF
+            IF(NM+MM.GT.NDMN)STOP'NDMN'
+            GAM=ALP+BET
+            C=(ALP*AA+BET*BB)/GAM
+            A=C-AA
+            B=C-BB
+              ARG=ALP*BET*(A-B)*(A-B)/GAM
+C    &           +RK*RK/4.0D0/GAM
+            ARG=EXPNL(-ARG)
+C           ARG=EXPNL(-ALP*BET*(A-B)*(A-B)/GAM,2)
+C           ARG=ARG*EXPNL(I*RK*C) (FIXED DOWN BELOW)
+        CALL GFT(NDMN,NM+MM,GAM,RK,F,G)
+              DO I=0,NM+MM
+                G(I)=G(I)*ARG
+                F(I)=F(I)*ARG
+              END DO 
+        DO N=0,NM
+        DO M=0,MM
+          CT(N,M)=0.0D0
+          ST(N,M)=0.0D0
+        END DO
+        END DO
+        DO N=0,NM
+         AP=1.0D0
+         DO J=0,N 
+         IF(J.NE.0)AP=AP*A
+        DO M=0,MM
+         BP=AP*BIN(N,J)
+         DO L=0,M
+         IF(L.NE.0)BP=BP*B
+           COEF=BIN(N,J)*BIN(M,L)*(B**L)*(A**J)
+C          COEF=BIN(M,L)*BP
+           NT=N+M-J-L
+            IF(2*(NT/2).EQ.NT)THEN
+            CT(N,M)=CT(N,M)+G(NT/2)*COEF
+            ELSE
+            ST(N,M)=ST(N,M)+F(NT/2)*COEF
+            END IF
+          END DO
+          END DO
+        END DO
+        END DO
+                COSD=COSF(RK*C)
+                SIND=SINF(RK*C)
+            DO N=0,NM
+            DO M=0,MM
+             PR=CT(N,M)*COSD-ST(N,M)*SIND 
+             PI=CT(N,M)*SIND+ST(N,M)*COSD
+             CT(N,M)=PR
+             ST(N,M)=PI
+            END DO
+            END DO
+        RETURN
+        END
+C
+        SUBROUTINE GFT(NDMN,NMAX,ALPHA,RK,F,G)
+C F(N)= INT X**(2*N+1)*SINF(KX)*EXPNL(-ALPHA*X*X)DX (-INF TO INF)
+C G(N)= INT X**(2*N  )*COSF(KX)*EXPNL(-ALPHA*X*X)DX (-INF TO INF)
+        IMPLICIT REAL*8 (A-H,O-Z)
+        DIMENSION F(0:NDMN),G(0:NDMN)
+        DATA PI/3.14159265358979312D0/
+             IF(NDMN.LT.NMAX)THEN
+             PRINT*,'PARAMETER ERROR IN GFT'
+             STOP
+             END IF
+            F3=1.0D0/ALPHA
+            F2=F3/2 
+            F1=RK*F2
+        G(0)=SQRT(PI/ALPHA)*EXPNL(-RK*F1/2)
+        F(0)=F1*G(0)
+C         PRINT*,ALPHA,RK
+C         PRINT*,G(0),F(0)
+          DO I=1,NMAX
+          G(I)=(2*I-1)*F2*G(I-1)-F1*  F(I-1)
+          F(I)=F1        *G(I-1)+F3*I*F(I-1)
+C         PRINT*,G(I),F(I)
+          END DO
+        RETURN 
+        END
+
+        SUBROUTINE DOINT(II,JJ,ALP,BET,A,B,RK,DR,DI)
+        IMPLICIT REAL*8 (A-H,O-Z)
+        DIMENSION N(3),M(3),A(3),B(3),SSR(3),SSI(3)
+        DIMENSION RK(3)
+        DIMENSION INDEX(3,10)
+         DO I=1,10
+            INDEX(1,I)=0
+            INDEX(2,I)=0
+            INDEX(3,I)=0
+         END DO
+            DO J=1,3
+            INDEX(J,J+1)=1
+            INDEX(J,J+4)=2
+            END DO
+            INDEX(1,8)=1
+            INDEX(2,8)=1
+            INDEX(1,9)=1
+            INDEX(3,9)=1
+            INDEX(2,10)=1
+            INDEX(3,10)=1
+            DO I=1,3
+            N(I)=INDEX(I,II)
+            M(I)=INDEX(I,JJ)
+            END DO
+            DO I=1,3
+            CALL BRTFRC(N(I),M(I),A(I),B(I),ALP,BET,RK(I),SSR(I),SSI(I))
+            END DO
+            DR= SSR(1)*SSR(2)*SSR(3)-
+     &          SSI(1)*SSI(2)*SSR(3)-
+     &          SSI(1)*SSR(2)*SSI(3)-
+     &          SSR(1)*SSI(2)*SSI(3)
+            DI=-SSI(1)*SSI(2)*SSI(3)+
+     &          SSI(1)*SSR(2)*SSR(3)+
+     &          SSR(1)*SSI(2)*SSR(3)+
+     &          SSR(1)*SSR(2)*SSI(3)
+        RETURN
+        END 
+ 
+        SUBROUTINE BRTFRC(N,M,A,B,ALP,BET,RK,SSR,SSI)
+        IMPLICIT REAL*8 (A-H,O-Z)
+        DIMENSION F(0:4),G(0:4)
+              C=(ALP*A+BET*B)/(ALP+BET)
+              AA=C-A
+              BB=C-B
+              ARG=ALP*BET*(A-B)*(A-B)/(ALP+BET)
+C             ARG=ARG+RK*RK/(ALP+BET)/4.0D0
+                   EXPN=EXPNL(-ARG)
+              ARGC=EXPN*COSF(C*RK)
+              ARGS=EXPN*SINF(C*RK)
+                CALL GFT(4,4,ALP+BET,RK,F,G)
+C F(N)= INT X**(2*N+1)*SINF(KX)*EXPNL(-ALPHA*X*X)DX (-INF TO INF)
+C G(N)= INT X**(2*N )*COSF(KX)*EXPNL(-ALPHA*X*X)DX (-INF TO INF)
+                SR=0.0D0
+                SI=0.0D0
+              DO J=0,N
+              DO L=0,M
+                COEF=                                 
+     &                (FCTRL(N)/FCTRL(N-J)/FCTRL(J))*
+     &                (FCTRL(M)/FCTRL(M-L)/FCTRL(L))*
+     &                (AA**J)*(BB**L)
+                NT=N+M-L-J
+                IF((NT/2)*2.EQ.NT)THEN
+                   SR=SR+COEF*G(NT/2)
+                ELSE
+                   SI=SI+COEF*F(NT/2)
+                END IF
+              END DO
+              END DO
+              SSR=SR*ARGC-SI*ARGS
+              SSI=SI*ARGC+SR*ARGS
+          RETURN
+          END
+        
+        FUNCTION FCTRL(NN)
+        IMPLICIT REAL*8 (A-H,O-Z)
+           IF(NN.GE.0)THEN
+           FCTRL=1.0D0
+           ELSE
+           FCTRL=0.0D0
+           END IF
+           DO I=1,NN
+           FCTRL=FCTRL*I
+           END DO
+        RETURN
+        END
+C
+        function expnl(x)
+        implicit real*8 (a-h,o-z)
+          expnl=exp(x)
+ 10     format(' x,exp:',2f12.4)
+        return
+        end
+        function sinf(x)
+        implicit real*8 (a-h,o-z)
+          sinf=sin(x)
+        return
+        end
+        function cosf(x)
+        implicit real*8 (a-h,o-z)
+          cosf=cos(x)
+        return
+        end                                     

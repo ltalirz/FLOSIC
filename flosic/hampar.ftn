@@ -1,0 +1,885 @@
+C
+C ************************************************************
+C
+      SUBROUTINE OVERNUM(IZERO) 
+C
+C WRITTEN BY MARK R PEDERSON (1998)
+C CALCULATE OVERLAP-LIKE MATRIX AS AN  O(N) PROBLEM
+C USE AS MUCH SYMMETRY AS POSSIBLE.
+C   STORE RESULT IN HSTOR(I,2)
+C PARALLEL VERSION OF JENS KORTUS, MARK PEDERSON (14-APRIL 1998)
+C
+       INCLUDE 'PARAMS'
+       INCLUDE 'commons.inc'
+       COMMON/HAMTIM/HTIM1,HTIM2,HTIM3,HTIM4
+       LOGICAL DOIT
+       DIMENSION AIP(3,MX_PROC), AJP(3,MX_PROC)
+       DIMENSION IFNP(MX_PROC),JFNP(MX_PROC),ISITEP(MX_PROC)
+     &          ,JSITEP(MX_PROC),IIDP(MX_PROC),JIDP(MX_PROC)
+       DIMENSION PHOLD(MAXUNSYM,MAXUNSYM,MX_PROC)
+C JK98
+       LOGICAL FIRST
+       DIMENSION NDEG(3),IPOINT(MAX_REP)
+       DIMENSION RNUC(3,MX_GRP)
+       DIMENSION RNUCI(3,MX_GRP),RNUCJ(3,MX_GRP)
+       DIMENSION IND_SALC(ISMAX,MAX_CON,3,2)
+       DIMENSION LNDX(6,MAX_CON,3,2)
+       DATA NDEG/1,3,6/
+       DATA FIRST/.TRUE./
+       HTIM1=0.0D0
+       HTIM2=0.0D0
+       HTIM3=0.0D0
+       HTIM4=0.0D0
+C
+C DEFINE NUMBER OF AVAILABLE SLAVE PROCESSES
+C
+       MPROC=0
+c
+%ifdef MPI
+c
+       MPROC=MIN(MX_PROC-1,NPROC)
+       IF (DEBUG) THEN
+        PRINT *,'total number of processors in overnum:',
+     &          MX_PROC,NPROC,MPROC
+       END IF
+c
+%endif
+c
+       CALL GTTIME(TIME1)
+C
+C CHECK AND PRINT BASIS SET PROPERTIES
+C
+       IF (FIRST) THEN
+        FIRST=.FALSE.
+        NORBS=0
+        NBSMAX=0
+        IID=0
+        DO 10 IFNCT=1,NFNCT
+         NSITE=0
+         DO IPOS=1,N_POS(IFNCT)
+          IID=IID+1
+          CALL GASITES(1,RIDT(1,IID),MNUC,RNUC,MSITES)
+          NSITE=NSITE+MNUC
+         END DO
+         NADD=N_CON(1,IFNCT)+3*N_CON(2,IFNCT)+6*N_CON(3,IFNCT)
+         NORBS=NORBS+NADD*NSITE
+         NBSMAX=MAX(NBSMAX,NADD)
+   10   CONTINUE
+        IF (IID.NE.NIDENT) THEN
+         PRINT *,'OVERLAP: IID AND NIDENT ARE DIFFERENT: ',IID,NIDENT
+         CALL STOPIT
+        END IF
+        IF (NBSMAX.GT.MAXUNSYM) THEN 
+         PRINT *,'OVERLAP: MAXUNSYM MUST BE AT LEAST: ',NBSMAX
+         CALL STOPIT
+        END IF
+C
+C INITITIALIZE SALC INDICES
+C
+        DO KREP=1,N_REP
+         INDBEG(1,KREP)=0
+         NS_TOT(KREP)  =0
+        END DO
+        DO 20 IID=1,NIDENT
+         IFNCT=IFUIDT(IID)
+         CALL OBINFO(1,RIDT(1,IID),RNUC,MNUC,ISHELL)
+         CALL GSMAT(ISHELL,2)
+         KSALC=0
+         DO KREP=1,N_REP
+          KSALC=KSALC+NDMREP(KREP)
+          DO L=0,LSYMMAX(IFNCT)
+           NS_TOT(KREP)=NS_TOT(KREP)
+     &                 +N_CON(L+1,IFNCT)*N_SALC(KSALC,L+1,ISHELL)
+          END DO
+          IF (IID .NE. NIDENT) INDBEG(IID+1,KREP)=NS_TOT(KREP)
+         END DO
+   20   CONTINUE
+C
+C SQUISHING TO SINGLE INDICES
+C
+        NHTOT=0
+        DO KREP=1,N_REP
+         IPOINT(KREP)=NHTOT
+         NHTOT=NHTOT+(NS_TOT(KREP)*(NS_TOT(KREP)+1))/2
+         IF (NS_TOT(KREP).GT.NDH) THEN
+          PRINT *,'OVERLAP: NDH MUST BE AT LEAST: ',NS_TOT(KREP)
+          CALL STOPIT
+         END IF
+        END DO
+        IF (NHTOT.GT.NDH_TOT) THEN
+         PRINT *,'OVERLAP: NDH_TOT MUST BE AT LEAST: ',NHTOT
+         CALL STOPIT
+        END IF
+C
+C CHECK IF MTEMP IS LARGE ENOUGH
+C
+        MTMAX=0
+        DO 40 IID=1,NIDENT
+         DO JID=IID,NIDENT
+          KOUNT=0
+          DO KREP=1,N_REP
+           IF (IID.EQ.NIDENT) THEN
+            MI=NS_TOT(KREP)-INDBEG(IID,KREP)
+           ELSE
+            MI=INDBEG(IID+1,KREP)-INDBEG(IID,KREP)
+           END IF
+           IF (JID.EQ.NIDENT) THEN
+            MJ=NS_TOT(KREP)-INDBEG(JID,KREP)
+           ELSE
+            MJ=INDBEG(JID+1,KREP)-INDBEG(JID,KREP)
+           END IF
+           KOUNT=KOUNT+MI*MJ
+          END DO
+          MTMAX=MAX(KOUNT,MTMAX)
+         END DO
+   40   CONTINUE
+        IF (MTMAX.GT.MTEMP) THEN
+         PRINT *,'OVERLAP: MTEMP MUST BE AT LEAST: ',MTMAX
+         CALL STOPIT
+        END IF
+C
+C PRINT DATA TO FILE OUTPUT
+C
+        DO KREP=1,N_REP
+         WRITE(7,*) 'REPRESENTATION:',KREP,' HAS:',NS_TOT(KREP),
+     &              ' BASES'
+        END DO
+        IF (DEBUG) PRINT *,'DONE WITH OVERLAP PRELIMINARIES'
+       END IF
+C
+C END OF FIRST-TIME-ONLY STUFF
+C
+       MODSTOR=2
+C
+C JK98/DVP98: send general data to children
+C
+c
+%ifdef MPI
+c 
+       CALL SENDDATA(102)    !  this was needed (KW) 
+       CALL SENDDATA(104)    !  this was here
+c
+%endif
+c
+C DETERMINE NHTOT (TOTAL NUMBER OF NONZERO HAMILTONIAN MATRIX ELEMENTS)
+C CHECK WHETHER DATA CAN BE READ FROM FILE
+C
+       NHTOT=0
+       DO KREP=1,N_REP
+        NHTOT=NHTOT+(NS_TOT(KREP)*(NS_TOT(KREP)+1))/2
+       END DO
+       IF (IZERO.EQ.0) THEN
+        DO IREC=1,NHTOT
+         HSTOR(IREC,MODSTOR)= 0.0D0
+        END DO
+       END IF
+C
+C CALCULATE OVERLAP/POTENTIAL MATRICES
+C
+       IIDL= -1
+       JIDL= -1
+       IPW=0
+       DO 400 IID=1,NIDENT
+        DO 380  JID=IID,NIDENT
+         IF (IID.NE.IIDL) THEN
+          CALL OBINFO(1,RIDT(1,IID),RNUCI,MNUCI,ISHELL)
+          CALL GSMAT(ISHELL,1)
+          IIDL=IID
+         END IF
+         IF (JID.NE.JIDL) THEN
+          CALL OBINFO(1,RIDT(1,JID),RNUCJ,MNUCJ,JSHELL)
+          CALL GSMAT(JSHELL,2)
+          JIDL=JID
+         END IF
+         ISA=IID
+         JSA=JID
+         IFNCT=IFUIDT(IID)
+         JFNCT=IFUIDT(JID)
+ 
+         DO 370 ISITE=1,MNUCI
+          IF (ISA.EQ.JSA) THEN
+           JB=ISITE
+          ELSE
+           JB=1
+          END IF
+          DO 360 JSITE=JB,MNUCJ
+           IPW=IPW+1
+           AIP(1,IPW)=RNUCI(1,ISITE)
+           AIP(2,IPW)=RNUCI(2,ISITE)
+           AIP(3,IPW)=RNUCI(3,ISITE)
+           IFNP(IPW)=IFNCT
+           IIDP(IPW)=IID
+           ISITEP(IPW)=ISITE
+c
+           AJP(1,IPW)=RNUCJ(1,JSITE)
+           AJP(2,IPW)=RNUCJ(2,JSITE)
+           AJP(3,IPW)=RNUCJ(3,JSITE)
+           JFNP(IPW)=JFNCT
+           JIDP(IPW)=JID
+           JSITEP(IPW)=JSITE
+           DOIT=.TRUE.
+           IF (IID.NE.NIDENT ) DOIT=.FALSE.
+           IF (JID.NE.NIDENT ) DOIT=.FALSE.
+           IF (ISITE.NE.MNUCI) DOIT=.FALSE.
+           IF (JSITE.NE.MNUCJ) DOIT=.FALSE.
+           IF (IPW.EQ.MPROC+1) DOIT=.TRUE.
+           IF (DOIT) THEN
+            NMPROC=IPW
+c
+c send tasks to slaves 
+c
+%ifdef MPI
+c
+            DO MYIP=1,NMPROC-1
+             CALL PAMHAMIL(1,IFNP(MYIP),JFNP(MYIP),AIP(1,MYIP),
+     &                     AJP(1,MYIP),HOLD,MYIP)
+            ENDDO
+c
+%endif
+c
+c have the master do some work too
+c
+            MYIP=NMPROC
+            NEWIT=1
+            CALL GETHOLD(NEWIT,IFNP(MYIP),JFNP(MYIP),AIP(1,MYIP),
+     &                   AJP(1,MYIP),HOLD)
+            DO JH=1,MAXUNSYM
+             DO IH=1,MAXUNSYM
+              PHOLD(IH,JH,MYIP)=HOLD(IH,JH)
+             END DO
+            END DO
+c
+c get data back from slaves
+c
+%ifdef MPI
+c
+            DO IIP=1,NMPROC-1
+             CALL PAMHAMIL(2,IFNCT,JFNCT,AI,AJ,HOLD,MYRES)
+             ADD=0.0D0
+             DO JH=1,MAXUNSYM
+              DO IH=1,MAXUNSYM
+               PHOLD(IH,JH,MYRES)=HOLD(IH,JH)
+               ADD=ADD+ABS(PHOLD(IH,JH,MYRES))
+              END DO
+             END DO
+             IF (DEBUG) PRINT*,'processor:',IIP,ADD
+            END DO
+c
+%endif
+c
+            DO 350 IPW=1,NMPROC
+             IIDK=IIDP(IPW)
+             JIDK=JIDP(IPW)
+             ISITEK=ISITEP(IPW)
+             JSITEK=JSITEP(IPW)
+             IF (IIDK.NE.IIDL) THEN
+              CALL OBINFO(1,RIDT(1,IIDK),RNUCI,MNUCI,ISHELL)
+              CALL GSMAT(ISHELL,1)
+              IIDL=IIDK
+             END IF
+             IF (JIDK.NE.JIDL) THEN
+              CALL OBINFO(1,RIDT(1,JIDK),RNUCJ,MNUCJ,JSHELL)
+              CALL GSMAT(JSHELL,2)
+              JIDL=JIDK
+             END IF
+             ISA=IIDK
+             JSA=JIDK
+             IFNCT=IFUIDT(IIDK)
+             JFNCT=IFUIDT(JIDK)
+             IS=ISHELL
+             JS=JSHELL
+             DO JTEMP=1,MTMAX
+              HTEMP(JTEMP)=0.0D0
+             END DO
+             DO JH=1,MAXUNSYM
+              DO IH=1,MAXUNSYM
+               HOLD(IH,JH)=PHOLD(IH,JH,IPW)
+              END DO
+             END DO
+C
+C JK98
+C
+             INDEX=0
+             DO LI=0,LSYMMAX(IFNCT)
+              DO IBASE=1,N_CON(LI+1,IFNCT)
+               DO MUI=1,NDEG(LI+1)
+                INDEX=INDEX+1
+                LNDX(MUI,IBASE,LI+1,1)=INDEX
+               END DO
+              END DO
+             END DO
+             INDEX=0
+             DO LJ=0,LSYMMAX(JFNCT)
+              DO JBASE=1,N_CON(LJ+1,JFNCT)
+               DO MUJ=1,NDEG(LJ+1)
+                INDEX=INDEX+1
+                LNDX(MUJ,JBASE,LJ+1,2)=INDEX
+               END DO
+              END DO
+             END DO
+C
+C NOW UPDATE SALC MATRICES FOR EACH REPRESENTATION
+C
+             NTIMES=2
+             IF (ISA.NE.JSA) NTIMES=1
+             IF (ISITEK.EQ.JSITEK) NTIMES=1
+             DO 260 ITIMES=1,NTIMES
+              IF (ITIMES.EQ.1) THEN
+               ISIT=ISITEK
+               JSIT=JSITEK
+               KSALC=0
+               JNDEX=0
+               DO 150 K_REP=1,N_REP
+                FF=1.0D0/NDMREP(K_REP)
+                DO 140 K_ROW=1,NDMREP(K_REP)
+                 IF (K_ROW.EQ.1) THEN
+                  JNDSV=JNDEX
+                 ELSE
+                  JNDEX=JNDSV
+                 END IF
+                 KSALC=KSALC+1
+                 DO 120 LI=0,LSYMMAX(IFNCT)
+                  ISTRT=(ISIT-1)*NDEG(LI+1)
+                  DO LJ=0,LSYMMAX(JFNCT)
+                   JSTRT=(JSIT-1)*NDEG(LJ+1)
+                   DO IBASE=1,N_CON(LI+1,IFNCT)
+                    DO JBASE=1,N_CON(LJ+1,JFNCT)
+                     DO MUJ=1,NDEG(LJ+1)
+                      DO MUI=1,NDEG(LI+1)
+                       KNDEX=JNDEX
+                       DO IQ=1,N_SALC(KSALC,LI+1,IS)
+                        DO JQ=1,N_SALC(KSALC,LJ+1,JS)
+                         KNDEX=KNDEX+1
+                         HTEMP(KNDEX)=HTEMP(KNDEX)
+     &                   +U_MAT(MUI+ISTRT,IQ,KSALC,LI+1,1)
+     &                   *U_MAT(MUJ+JSTRT,JQ,KSALC,LJ+1,2)*FF
+     &                   *HOLD(LNDX(MUJ,JBASE,LJ+1,2),
+     &                         LNDX(MUI,IBASE,LI+1,1))
+                        END DO
+                       END DO
+                      END DO
+                     END DO
+                     JNDEX=KNDEX
+                    END DO
+                   END DO
+                  END DO
+  120            CONTINUE
+  140           CONTINUE
+  150          CONTINUE
+              ELSE
+               ISIT=ISITEK
+               JSIT=JSITEK
+               KSALC=0
+               JNDEX=0
+               DO 250 K_REP=1,N_REP
+                FF=1.0D0/NDMREP(K_REP)
+                DO 240 K_ROW=1,NDMREP(K_REP)
+                 IF (K_ROW.EQ.1) THEN
+                  JNDSV=JNDEX
+                 ELSE
+                  JNDEX=JNDSV
+                 END IF
+                 KSALC=KSALC+1
+                 DO 220 LJ=0,LSYMMAX(JFNCT)
+                  JSTRT=(JSIT-1)*NDEG(LJ+1)
+                  DO LI=0,LSYMMAX(IFNCT)
+                   ISTRT=(ISIT-1)*NDEG(LI+1)
+                   DO JBASE=1,N_CON(LJ+1,JFNCT)
+                    DO IBASE=1,N_CON(LI+1,IFNCT)
+                     DO MUI=1,NDEG(LI+1)
+                      DO MUJ=1,NDEG(LJ+1)
+                       KNDEX=JNDEX
+                       DO JQ=1,N_SALC(KSALC,LJ+1,JS)
+                        DO IQ=1,N_SALC(KSALC,LI+1,IS)
+                         KNDEX=KNDEX+1
+                         HTEMP(KNDEX)=HTEMP(KNDEX)
+     &                   +U_MAT(MUJ+JSTRT,JQ,KSALC,LJ+1,2)
+     &                   *U_MAT(MUI+ISTRT,IQ,KSALC,LI+1,1)*FF
+     &                   *HOLD(LNDX(MUJ,JBASE,LJ+1,2),
+     &                         LNDX(MUI,IBASE,LI+1,1))
+                        END DO
+                       END DO
+                      END DO
+                     END DO
+                     JNDEX=KNDEX
+                    END DO
+                   END DO
+                  END DO
+  220            CONTINUE
+  240           CONTINUE
+  250          CONTINUE
+              END IF
+  260        CONTINUE
+C
+C MOVE THINGS TO THE CORRECT ARRAY LOCATION
+C FIRST, CALCULATE SALC INDICES
+C
+             JNDEX=0
+             KSALC=0
+             DO 300 KREP=1,N_REP
+              KSALC=KSALC+NDMREP(KREP)
+              INDEX=INDBEG(ISA,KREP)
+              DO LI=0,LSYMMAX(IFNCT)
+               DO IBASE=1,N_CON(LI+1,IFNCT)
+                DO IQ=1,N_SALC(KSALC,LI+1,IS)
+                 INDEX=INDEX+1
+                 IND_SALC(IQ,IBASE,LI+1,1)=INDEX
+                END DO
+               END DO
+              END DO
+              INDEX=INDBEG(JSA,KREP)
+              DO LJ=0,LSYMMAX(JFNCT)
+               DO JBASE=1,N_CON(LJ+1,JFNCT)
+                DO JQ=1,N_SALC(KSALC,LJ+1,JS)
+                 INDEX=INDEX+1
+                 IND_SALC(JQ,JBASE,LJ+1,2)=INDEX
+                END DO
+               END DO
+              END DO
+C
+C END CALCULATION OF SALC INDICES FOR KREP
+C
+              DO 280 LI=0,LSYMMAX(IFNCT)
+               DO LJ=0,LSYMMAX(JFNCT)
+                DO IBASE=1,N_CON(LI+1,IFNCT)
+                 DO JBASE=1,N_CON(LJ+1,JFNCT)
+                  DO IQ=1,N_SALC(KSALC,LI+1,IS)
+                   II=IND_SALC(IQ,IBASE,LI+1,1)
+                   IJ=IND_SALC(1 ,JBASE,LJ+1,2)-1
+                   DO JQ=1,N_SALC(KSALC,LJ+1,JS)
+                    IJ=IJ+1
+                    JNDEX=JNDEX+1
+                    IF (JNDEX.GT.MTEMP) THEN
+                     PRINT *,'OVERLAP: MTEMP IS TOO SMALL'
+                     CALL STOPIT
+                    END IF
+                    IF (IJ.GE.II) THEN
+                     KNDEX=IPOINT(KREP)+1+(IJ-II)
+     &               +(NS_TOT(KREP)      *(NS_TOT(KREP)+1)
+     &               -(NS_TOT(KREP)-II+1)*(NS_TOT(KREP)-II+2))/2
+                     HSTOR(KNDEX,MODSTOR)=HSTOR(KNDEX,MODSTOR)
+     &                                   +HTEMP(JNDEX)
+                    ELSE
+                     KNDEX=IPOINT(KREP)+1+(II-IJ)
+     &               +(NS_TOT(KREP)      *(NS_TOT(KREP)+1)
+     &               -(NS_TOT(KREP)-IJ+1)*(NS_TOT(KREP)-IJ+2))/2
+                    END IF
+                   END DO
+                  END DO
+                 END DO
+                END DO
+               END DO
+  280         CONTINUE
+  300        CONTINUE
+  350       CONTINUE
+            IPW=0
+           END IF
+  360     CONTINUE
+  370    CONTINUE
+  380   CONTINUE
+  400  CONTINUE
+       CALL GTTIME(TIME2)
+       PRINT 500,TIME2-TIME1
+  500  FORMAT('TIME IN OVERNUM:',F12.4)
+       IF (DEBUG) PRINT *,'HTIME : ',HTIM1,HTIM2,HTIM3,HTIM4
+       RETURN
+      END
+C
+C ***************************************************************
+C
+       SUBROUTINE GETHOLD(NEWIT,IFNCT,JFNCT,AI,AJ,HSUB)
+C
+C WRITTEN BY MARK R PEDERSON (1998)
+C
+       INCLUDE 'PARAMS'
+       INCLUDE 'commons.inc'
+       LOGICAL SKIP , FULLSKIPI,FULLSKIPJ,ONSITE
+       LOGICAL DOIT
+       COMMON/HAMTIM/HTIM1,HTIM2,HTIM3,HTIM4
+       COMMON/TMP1/PISV(13,MAX_PTS)
+       COMMON/MIXPOT/POTIN(MAX_PTS*MXSPN),DVPOT(MAX_PTS*MXSPN)
+       DIMENSION AI(3),AJ(3),IBEG(3),IEND(3),AIMJ(3)
+       DIMENSION SS(10,10,MAX_BARE,MAX_BARE)
+       DIMENSION P(11,MPBLOCK,2),EXPI(MPBLOCK,MAX_BARE)
+     &          ,ENV(MPBLOCK)   ,EXPJ(MPBLOCK,MAX_BARE)
+       DIMENSION DOIT(2,MX_SPH),DOTL(MX_SPH)
+       DIMENSION PRODB(10,10,MPBLOCK),VOL(MPBLOCK)
+       DIMENSION HSUB(MAXUNSYM,MAXUNSYM)
+       DIMENSION SKIP(MAX_BARE,MAX_BARE)
+       DIMENSION NIMAX(MAX_BARE),NJMAX(MAX_BARE)
+       DIMENSION AL(3)
+       DATA IBEG,IEND/1,2,5,1,4,10/
+       DATA ICALL/0/
+       DATA ZERO/1.0D-8/ 
+C
+       IF (DEBUG) PRINT 1010,NEWIT,IFNCT,JFNCT,NSPHERES,NMSH
+ 1010  FORMAT(' GETHOLD: NIJSP:',5I8)
+
+       CALL GTTIME(TIM1)
+
+       IF (NEWIT.EQ.1) THEN
+        IFNCS= -1
+        AL(1)=1.0D30
+        AL(2)=1.0D30
+        AL(3)=1.0D30
+       END IF
+       NEWIT=0
+       DIFF=ABS(IFNCS-IFNCT)
+       IFNCS=IFNCT
+       DO J=1,3
+        DIFF=DIFF+ABS(AL(J)-AI(J))
+        AL(J)=AI(J)
+       END DO
+       NEW=0
+       IF (DIFF.GT.0.00001) NEW=1
+       DIFF=ABS(AI(1)-AJ(1))+ABS(AI(2)-AJ(2))+ABS(AI(3)-AJ(3)) 
+       AIMJ(1)=AI(1)-AJ(1)
+       AIMJ(2)=AI(2)-AJ(2)
+       AIMJ(3)=AI(3)-AJ(3)
+       ONSITE=.FALSE.
+       IF (DIFF .LT. 0.001D0) THEN
+        ONSITE=.TRUE.
+        ICALL=ICALL+1     
+        ICLC =0
+       END IF
+       IF (NEW.EQ.1) THEN
+        ALPIONE=BFALP(N_BARE(IFNCT),IFNCT)
+        ALPITWO=BFALP(N_BARE(IFNCT)-1,IFNCT)-ALPIONE
+        ALPITHR=BFALP(N_BARE(IFNCT)-2,IFNCT)-ALPIONE
+        RMAX2=20.0D0/ALPIONE 
+        PI4D3=16.0D0*ATAN(1.0D0)/3.0D0
+        CALL GTTIME(TM1)
+C
+C FIGURE OUT WHICH SPHERES SHOULD BE SKIPPED
+C
+        DO ISPH=1,NSPHERES
+         RSQ=0.0D0
+         DO J=1,3
+          RSQ=(AI(J)-TSPH(J,ISPH))**2+RSQ
+         END DO
+         VLM=PI4D3*TSPH(4,ISPH)**3
+         RSQ=SQRT(RSQ)
+         RMN=RSQ-TSPH(4,ISPH)
+         RMX=RSQ+TSPH(4,ISPH)
+         RMX=MAX(RMX,1.0D0)
+         DOIT(1,ISPH)=.FALSE.
+         IF (RMN .GT. 0.0D0) THEN
+          SIZ=EXP(-BFALP(N_BARE(IFNCT),IFNCT)*RMN*RMN)
+          SIZ=SIZ*VLM*RMX*RMX
+          DOTL(ISPH)=SIZ
+          IF (SIZ.GT.ZERO) DOIT(1,ISPH)=.TRUE.
+         ELSE 
+          DOTL(ISPH)=VLM   
+          DOIT(1,ISPH)=.TRUE.
+         END IF
+        END DO
+        DO 20 ISPH=1,NSPHERES
+         IF (DOIT(1,ISPH)) THEN
+          DO 10 KPTS=LIMSPH(1,ISPH),LIMSPH(2,ISPH)
+           PISV( 2,KPTS)=RMSH(1,KPTS)-AI(1)
+           PISV( 3,KPTS)=RMSH(2,KPTS)-AI(2)
+           PISV( 4,KPTS)=RMSH(3,KPTS)-AI(3)
+           PISV( 5,KPTS)=PISV(2,KPTS)*PISV(2,KPTS)
+           PISV( 6,KPTS)=PISV(3,KPTS)*PISV(3,KPTS)
+           PISV( 7,KPTS)=PISV(4,KPTS)*PISV(4,KPTS)
+           PISV( 1,KPTS)=PISV(5,KPTS)+PISV(6,KPTS)+PISV(7,KPTS)
+           PISV( 8,KPTS)=PISV(2,KPTS)*PISV(3,KPTS)
+           PISV( 9,KPTS)=PISV(2,KPTS)*PISV(4,KPTS)
+           PISV(10,KPTS)=PISV(3,KPTS)*PISV(4,KPTS)
+           PISV(11,KPTS)=DVPOT(KPTS)*EXP(-ALPIONE*PISV(1,KPTS))
+           PISV(12,KPTS)=            EXP(-ALPITWO*PISV(1,KPTS))
+           PISV(13,KPTS)=            EXP(-ALPITHR*PISV(1,KPTS))
+   10     CONTINUE
+         END IF
+   20   CONTINUE
+        CALL GTTIME(TM2)
+C
+        IF (DEBUG) PRINT*,'NEW:',TM2-TM1,NMSH,ALPIONE,RMAX2
+       END IF
+       CALL GTTIME(TIM2)
+       HTIM1= HTIM1+TIM2-TIM1
+       TIM1= TIM2
+C
+C FIGURE OUT WHICH SPHERES TO SKIP FOR OTHER ATOM
+C
+       N1=0
+       N3=0
+       SIZT=0.0D0
+       DO ISPH=1,NSPHERES
+        RSQ=0.0D0
+        DO J=1,3
+         RSQ=(AJ(J)-TSPH(J,ISPH))**2+RSQ
+        END DO
+        RSQ=SQRT(RSQ)
+        RMN=RSQ-TSPH(4,ISPH)
+        RMX=RSQ+TSPH(4,ISPH)
+        VLM=PI4D3*TSPH(4,ISPH)**3
+        RMX=MAX(RMX,1.0D0)
+        IF (RMN .GT. 0.0D0) THEN
+         SIZ=EXP(-BFALP(N_BARE(JFNCT),JFNCT)*RMN*RMN)
+         SIZ=SIZ*VLM*RMX*RMX
+        ELSE 
+         SIZ=VLM   
+        END IF 
+        DOIT(2,ISPH)=DOIT(1,ISPH)
+        IF (SIZ.LT.ZERO) DOIT(2,ISPH)=.FALSE.
+        SIZT=SIZT+SIZ
+        SIZ=SIZ*DOTL(ISPH)/VLM
+        IF (SIZ .LT. ZERO**1.5D0) DOIT(2,ISPH)=.FALSE.
+        IF (DOIT(1,ISPH)) N1=N1+1
+        IF (DOIT(2,ISPH)) N3=N3+1
+       END DO
+       IF (DEBUG) PRINT*,'DOIT:',N1,N3,SIZT,PI4D3,RMX
+C
+       MAXI=N_CON(1,IFNCT)+3*N_CON(2,IFNCT)+6*N_CON(3,IFNCT)
+       MAXJ=N_CON(1,JFNCT)+3*N_CON(2,JFNCT)+6*N_CON(3,JFNCT)
+       MIMAX=1
+       DO IALP=1,N_BARE(IFNCT)
+        LMAX=1
+        DO L=2,3
+         DO IC=1,N_CON(L,IFNCT)
+          IF (ABS(BFCON(IALP,IC,L,IFNCT)) .GT. 0.0D0) THEN
+           LMAX=L 
+          END IF
+         END DO
+        END DO
+        IF (LMAX.EQ.1) NIMAX(IALP)=1
+        IF (LMAX.EQ.2) NIMAX(IALP)=4
+        IF (LMAX.EQ.3) NIMAX(IALP)=10
+        MIMAX=MAX(NIMAX(IALP),MIMAX)
+       END DO
+C
+       MJMAX=1
+       DO JALP=1,N_BARE(JFNCT)
+        LMAX=1
+        DO L=2,3
+         DO JC=1,N_CON(L,JFNCT)
+          IF (ABS(BFCON(JALP,JC,L,JFNCT)) .GT. 0.0D0) THEN
+           LMAX=L 
+          END IF
+         END DO
+        END DO
+        IF (LMAX.EQ.1) NJMAX(JALP)=1
+        IF (LMAX.EQ.2) NJMAX(JALP)=4
+        IF (LMAX.EQ.3) NJMAX(JALP)=10
+        MJMAX=MAX(NJMAX(JALP),MJMAX)
+       END DO
+C
+       DO I=1,MAXI
+        DO J=1,MAXJ
+         HSUB(J,I)=0.0D0
+        END DO
+       END DO
+       DO IALP=1,N_BARE(IFNCT)
+        ALPHAI=BFALP(IALP,IFNCT)
+        DO JALP=1,N_BARE(JFNCT)
+         ALPHAJ=BFALP(JALP,JFNCT)
+         SKIP(IALP,JALP)=.FALSE.
+         ARG=(ALPHAI*ALPHAJ/(ALPHAI+ALPHAJ))
+     &      *((AI(1)-AJ(1))**2+(AI(2)-AJ(2))**2+(AI(3)-AJ(3))**2)
+         IF (ARG.GT.CUTEXP) SKIP(IALP,JALP)=.TRUE.
+         DO I=1,10
+          DO J=1,10
+           SS(I,J,IALP,JALP)=0.0D0
+          END DO
+         END DO
+        END DO
+       END DO
+
+       CALL GTTIME(TIM2)
+       HTIM2= HTIM2+TIM2-TIM1
+       TIM1= TIM2
+C
+C END ZEROING, CALCULATE OVERLAP OR KINETIC ENERGY MATRIX ELEMENTS
+C
+       MPTS=0
+       DO 100 ISPH=1,NSPHERES
+        IF (.NOT.DOIT(2,ISPH)) GOTO 100
+        DO 90 KPTS=LIMSPH(1,ISPH),LIMSPH(2,ISPH)
+         MPTS=MPTS+1
+         P( 1,MPTS,1)=1.0D0
+         P( 2,MPTS,1)=PISV( 2,KPTS)
+         P( 3,MPTS,1)=PISV( 3,KPTS)   
+         P( 4,MPTS,1)=PISV( 4,KPTS)
+         P( 5,MPTS,1)=PISV( 5,KPTS)
+         P( 6,MPTS,1)=PISV( 6,KPTS)
+         P( 7,MPTS,1)=PISV( 7,KPTS)
+         P( 8,MPTS,1)=PISV( 8,KPTS)
+         P( 9,MPTS,1)=PISV( 9,KPTS)
+         P(10,MPTS,1)=PISV(10,KPTS)
+         P(11,MPTS,1)=PISV( 1,KPTS)
+         VOL(MPTS)=PISV(11,KPTS)
+         EXPI(MPTS,N_BARE(IFNCT))=  1.0D0
+         EXPI(MPTS,N_BARE(IFNCT)-1)=PISV(12,KPTS)
+         EXPI(MPTS,N_BARE(IFNCT)-2)=PISV(13,KPTS)
+         IDOIT=0
+         IF (MPTS .EQ. MPBLOCK)       IDOIT=1
+         IF (KPTS .EQ. LIMSPH(2,ISPH)) IDOIT=1
+         IF (IDOIT.EQ.1) THEN     
+          RMINI=1.0D30
+          RMAXI=0.0D0
+          DO IPTS=1,MPTS
+           RMINI=MIN(RMINI,P(11,IPTS,1))
+           RMAXI=MAX(RMAXI,P(11,IPTS,1))
+          END DO
+          IF (.NOT.ONSITE) THEN
+           DO IPTS=1,MPTS
+            P( 1,IPTS,2)=1.0D0
+            P( 2,IPTS,2)=P(2,IPTS,1)+AIMJ(1)
+            P( 3,IPTS,2)=P(3,IPTS,1)+AIMJ(2)
+            P( 4,IPTS,2)=P(4,IPTS,1)+AIMJ(3)
+            P( 5,IPTS,2)=P(2,IPTS,2)*P(2,IPTS,2)
+            P( 6,IPTS,2)=P(3,IPTS,2)*P(3,IPTS,2)
+            P( 7,IPTS,2)=P(4,IPTS,2)*P(4,IPTS,2)
+            P( 8,IPTS,2)=P(2,IPTS,2)*P(3,IPTS,2)
+            P( 9,IPTS,2)=P(2,IPTS,2)*P(4,IPTS,2)
+            P(10,IPTS,2)=P(3,IPTS,2)*P(4,IPTS,2)
+           END DO
+           RMINJ=1.0D30
+           RMAXJ=0.0D0
+           DO IPTS=1,MPTS
+            P(11,IPTS,2)=P(5,IPTS,2)+P(6,IPTS,2)+P(7,IPTS,2)
+            RMINJ=MIN(RMINJ,P(11,IPTS,2))
+            RMAXJ=MAX(RMAXJ,P(11,IPTS,2))
+           END DO
+          ELSE
+           DO IPTS=1,MPTS
+            DO J=1,11
+             P(J,IPTS,2)=P(J,IPTS,1)
+            END DO
+           END DO
+           RMINJ=RMINI
+           RMAXJ=RMAXI
+          END IF
+C
+C NOTE THAT EXPI.NE.EXPJ EVEN FOR ONSITE CALCS
+C
+          FULLSKIPI=.FALSE.
+          DO IALP=1,N_BARE(IFNCT)-3
+           ALPHAI=BFALP(IALP,IFNCT)-ALPIONE
+           IF (ALPHAI*RMINI .LT. CUTEXP) THEN
+            DO IPTS=1,MPTS
+             EXPI(IPTS,IALP)=EXP(-ALPHAI*P(11,IPTS,1))
+            END DO
+           END IF
+          END DO
+          FULLSKIPJ=.TRUE.
+          DO JALP=1,N_BARE(JFNCT)
+           ALPHAJ=BFALP(JALP,JFNCT)
+           IF (ALPHAJ*RMINJ .LT. CUTEXP) THEN
+            FULLSKIPJ=.FALSE.
+            DO IPTS=1,MPTS
+             EXPJ(IPTS,JALP)=EXP(-ALPHAJ*P(11,IPTS,2))
+            END DO
+           END IF
+          END DO
+          IF (FULLSKIPJ.OR.FULLSKIPI) GOTO 60 
+          DO IPTS=1,MPTS
+           DO I=1,MIMAX
+            P(I,IPTS,1)=P(I,IPTS,1)*VOL(IPTS)
+           END DO
+          END DO
+          DO IPTS=1,MPTS
+           DO J=1,MJMAX
+            DO I=1,MIMAX
+             PRODB(I,J,IPTS)=P(I,IPTS,1)*P(J,IPTS,2)
+            END DO
+           END DO
+          END DO
+          PTOT=0.0D0
+          DO IPTS=1,MPTS
+           DO J=1,MJMAX
+            DO I=1,MIMAX
+             PTOT=PTOT+ABS(PRODB(I,J,IPTS))
+            END DO
+           END DO
+          END DO
+          DO 50 IALP=1,N_BARE(IFNCT)
+           ALPHAI=BFALP(IALP,IFNCT)
+           IF (ALPHAI*RMINI .GT. CUTEXP) GOTO 50
+           DO 40 JALP=1,N_BARE(JFNCT)
+            ALPHAJ=BFALP(JALP,JFNCT)
+            IF (ALPHAJ*RMINJ .GT. CUTEXP) GOTO 40
+            IF (.NOT.SKIP(IALP,JALP)) THEN
+C
+C UPDATE 10X10 MATRICES
+C
+             DO IPTS=1,MPTS
+              ENV(IPTS)=EXPI(IPTS,IALP)*EXPJ(IPTS,JALP)
+             END DO
+             DO IPTS=1,MPTS
+              IF (PTOT*ENV(IPTS) .GT. ZERO/100.0D0) THEN
+               IF (ONSITE) THEN
+                IF ((IALP .EQ. N_BARE(IFNCT)) .AND.
+     &              (JALP .EQ. N_BARE(IFNCT))) ICLC=ICLC+1
+               END IF
+               IF ((NJMAX(JALP) .EQ. 10) .AND. 
+     &             (NIMAX(IALP) .EQ. 10)) THEN
+                DO J=1,10
+                 DO I=1,10
+                  SS(I,J,IALP,JALP)=SS(I,J,IALP,JALP)
+     &                             +PRODB(I,J,IPTS)*ENV(IPTS)
+                 END DO
+                END DO
+               ELSE 
+                DO J=1,NJMAX(JALP)
+                 DO I=1,NIMAX(IALP)
+                  SS(I,J,IALP,JALP)=SS(I,J,IALP,JALP)
+     &                             +PRODB(I,J,IPTS)*ENV(IPTS)
+                 END DO
+                END DO
+               END IF
+              END IF
+             END DO
+            END IF
+   40       CONTINUE
+   50      CONTINUE       
+   60     CONTINUE
+          MPTS=0
+         END IF
+   90   CONTINUE
+  100  CONTINUE
+
+       CALL GTTIME(TIM2)
+       HTIM3= HTIM3+TIM2-TIM1
+       TIM1= TIM2
+C
+       DO 240 IALP=1,N_BARE(IFNCT)
+        ALPHAI=BFALP(IALP,IFNCT)
+        DO 220 JALP=1,N_BARE(JFNCT)
+         ALPHAJ=BFALP(JALP,JFNCT)
+C
+C        CALL OVMXSF(ALPHAI,ALPHAJ,AI,AJ,SS(1,1,IALP,JALP))
+C
+         IF (.NOT.SKIP(IALP,JALP)) THEN
+          INDEX=0
+          DO LI=0,LSYMMAX(IFNCT)
+           DO IBASE=1,N_CON(LI+1,IFNCT)
+            DO MUI=IBEG(LI+1),IEND(LI+1)
+             INDEX=INDEX+1
+             JNDEX=0
+             DO LJ=0,LSYMMAX(JFNCT)
+              DO JBASE=1,N_CON(LJ+1,JFNCT)
+               PROD=BFCON(IALP,IBASE,LI+1,IFNCT)
+     &             *BFCON(JALP,JBASE,LJ+1,JFNCT)
+               DO MUJ=IBEG(LJ+1),IEND(LJ+1)
+                JNDEX=JNDEX+1
+                HSUB(JNDEX,INDEX)=HSUB(JNDEX,INDEX)
+     &                           +PROD*SS(MUI,MUJ,IALP,JALP)
+               END DO
+              END DO
+             END DO
+            END DO
+           END DO
+          END DO
+         END IF
+  220   CONTINUE
+  240  CONTINUE
+       CALL GTTIME(TIM2)
+       HTIM4= HTIM4+TIM2-TIM1
+       TIM1= TIM2
+       IF (DEBUG.AND.ONSITE) THEN
+        PRINT*,'OVERNUM ICALL, ICLC:',ICALL,ICLC,FLOAT(ICLC)/NMSH
+       END IF
+       RETURN
+       END 
