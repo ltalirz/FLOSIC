@@ -2306,20 +2306,21 @@ C           END DO
          END DO
          CALL DIAGGE(3,3,X2,XX,ABC,A1,1)
          PRINT *,'ABC',ABC(1),ABC(2),ABC(3),
-     &           (RABCD(J,ABS(NFLO)+MFOD(1)*(NSPN-1)),J=1,2)
+     &           (RABCD(J,ABS(NFLO)+MFOD(1)*(KSPX-1)),J=1,2)
          PRINT *,'ABC ratio ',ABC(3)/ABC(1),ABC(3)/ABC(2)
          DO K=1,3
           IF(ABC(K).LT.0.2D0) THEN
-           ABC(K)=ABC(K)*RABCD(1,ABS(NFLO)+MFOD(1)*(NSPN-1))
+           ABC(K)=ABC(K)*RABCD(1,ABS(NFLO)+MFOD(1)*(KSPX-1))
           ELSE
            IF(K.EQ.3) THEN
-             ABC(K)=ABC(K)*RABCD(2,ABS(NFLO)+MFOD(1)*(NSPN-1))
+             ABC(K)=ABC(K)*RABCD(2,ABS(NFLO)+MFOD(1)*(KSPX-1))
             ELSE
-             ABC(K)=ABC(K)*RABCD(2,ABS(NFLO)+MFOD(1)*(NSPN-1))*1.33D0
+             ABC(K)=ABC(K)*RABCD(2,ABS(NFLO)+MFOD(1)*(KSPX-1))*1.33D0
             END IF
           END IF
          END DO
  949     FORMAT(3F8.4)
+          PRINT*,'ABC NSPN KSPX', ABC,NSPN,KSPX
 C        if(RDmax.lt.0.2D0) then
 C           RDmax=RDmax*1000.0D0
 C        else
@@ -2409,7 +2410,7 @@ CCC 951   FORMAT('SAVINGS:',I10,'/',I10)
         CN=CN+RHOG(I,1,1)*WMSH(I)
         SIC_COU=SIC_COU+RHOG(I,1,1)*WMSH(I)*POT(I)*0.5D0
        END DO
-       RABCD(3,ABS(NFLO)+MFOD(1)*(NSPN-1))=CN 
+       RABCD(3,ABS(NFLO)+MFOD(1)*(KSPX-1))=CN 
        CALL GTTIME(TKPW1)
        VSIC=0.0D0
        VL=0.0D0

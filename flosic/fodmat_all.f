@@ -179,7 +179,7 @@ C
         OPEN(80,FILE='ABCD')
         DO KSPN=1,NSPN
         DO I=1,MFOD(KSPN)
-         READ(80,*)(RABCD(J,I+MFOD(1)*(NSPN-1)),J=1,2)
+         READ(80,*)(RABCD(J,I+MFOD(1)*(KSPN-1)),J=1,2)
         END DO
         END DO
         CLOSE(80)
@@ -418,7 +418,7 @@ C REPAIR DAMAGE DONE TO VMESH
           READ(99)((RMSH(J,I),J=1,3),I=1,NMSH)
           CLOSE(99)
           CALL APOTNL(TOTQNUM)
-C Save XC DFT energies, becaise GETVLXC is called in SIC, copy them back
+C Save XC DFT energies, because GETVLXC is called in SIC, copy them back
 C at the end 
           E1=ERGXL
           E2=ERGXN
@@ -488,10 +488,11 @@ C
                         SICENERGY=SICENERGY+TOT_SIC*MEQV
        END DO !kflo
 C
+                print*,'CONVERGED',CONVERGENCE,ITSCF,MAXSCF
 c  kaj 7-12-23
 c
 c uncomment to get fod forces  ***************************************************
-                IF(CONVERGENCE) THEN
+                IF(CONVERGENCE.OR.ITSCF.EQ.MAXSCF) THEN
                  CALL GET_EPS(kspx)  ! ,MFOD(kspnx))
                 END IF
 c end change ***************************************************
@@ -504,7 +505,7 @@ c
 c  kaj 7-12-23   get fod forces
 c
 c  uncomment  to get forces **********************************
-       if(convergence) then
+       IF(CONVERGENCE.OR.ITSCF.EQ.MAXSCF) THEN
        call frmorb2(kspx)
        end if  
        END DO   !kspx
@@ -515,21 +516,21 @@ c end change ***************************************************
 c KAJ  remove when working 
 C Adjusting parameters for the ellipsoid 
        OPEN(51,FILE='ABCD')
-       DO KSPN=1,2
+       DO KSPN=1,NSPN
        DO KFLO=1,MFOD(KSPN)
-       IF((1.0D0-RABCD(3,KFLO+MFOD(1)*(NSPN-1))).GT.0.0000009D0) THEN
+       IF((1.0D0-RABCD(3,KFLO+MFOD(1)*(KSPN-1))).GT.0.0000009D0) THEN
        DO J=1,2
-       RABCD(J,KFLO+MFOD(1)*(NSPN-1))=RABCD(J,KFLO+MFOD(1)*(NSPN-1))
+       RABCD(J,KFLO+MFOD(1)*(KSPN-1))=RABCD(J,KFLO+MFOD(1)*(KSPN-1))
      &                              *1.1D0
        END DO
        END IF
-       IF((1.0D0-RABCD(3,KFLO+MFOD(1)*(NSPN-1))).LT.0.0000001D0) THEN
+       IF((1.0D0-RABCD(3,KFLO+MFOD(1)*(KSPN-1))).LT.0.0000001D0) THEN
        DO J=1,2
-       RABCD(J,KFLO+MFOD(1)*(NSPN-1))=RABCD(J,KFLO+MFOD(1)*(NSPN-1))
+       RABCD(J,KFLO+MFOD(1)*(KSPN-1))=RABCD(J,KFLO+MFOD(1)*(KSPN-1))
      &                              *0.95D0
        END DO
        END IF
-       WRITE(51,*)(RABCD(J,KFLO+MFOD(1)*(NSPN-1)),J=1,3)
+       WRITE(51,*)(RABCD(J,KFLO+MFOD(1)*(KSPN-1)),J=1,3)
        END DO
        END DO
        CLOSE(51)
