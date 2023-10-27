@@ -1,6 +1,7 @@
 C This program reads symmtery independent FODs from FRMORB, updates them
 C and writes back in FRMIDT
-        subroutine electronic_geometry(energy)
+C FOD update using CGRAD only for now
+         subroutine electronic_geometry(energy)
          implicit real*8 (a-h,o-z)
          logical exist
          dimension r(3,1000),f(3,1000),d2inv(1000),suggest(1000)
