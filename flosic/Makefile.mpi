@@ -11,7 +11,7 @@ FC = mpif90
 FFF = mpif90  
 
 
-FFLAGS = -O3 -mcmodel=large
+FFLAGS = -O3 -mcmodel=large -fallow-argument-mismatch
 
 
 # Flags
